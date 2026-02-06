@@ -5,3 +5,7 @@ scipy>=1.10.0
 customtkinter>=5.2.0
 # Parakeet via onnx-asr (same approach as Meetily). Use [gpu,hub] for CUDA.
 onnx-asr[cpu,hub]>=0.10.0
+# OpenAI API for AI Summary
+openai>=1.0.0
+# Load OPENAI_API_KEY from .env (optional)
+python-dotenv>=1.0.0

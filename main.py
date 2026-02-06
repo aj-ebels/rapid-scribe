@@ -7,9 +7,18 @@ Same Parakeet/ONNX stack as Meetily: https://github.com/Zackriya-Solutions/meeti
 
 import os
 import sys
+import json
 import threading
 import queue
+import uuid
+from datetime import date
 from pathlib import Path
+
+try:
+    from dotenv import load_dotenv
+except ImportError:
+    def load_dotenv(*args, **kwargs):
+        pass  # no-op if python-dotenv not installed
 
 # Ensure WSLg can display the GUI (PulseAudio + X11/Wayland). No-op on Windows.
 try:
@@ -24,7 +33,7 @@ import numpy as np
 import sounddevice as sd
 from scipy.io import wavfile
 import customtkinter as ctk
-from tkinter import messagebox
+from tkinter import messagebox, filedialog
 
 # Lazy load Parakeet via onnx-asr (same stack as Meetily: istupakov ONNX Parakeet)
 # Model: nemo-parakeet-tdt-0.6b-v2 (en) or nemo-parakeet-tdt-0.6b-v3 (multilingual)
@@ -243,6 +252,97 @@ def transcription_worker(chunk_queue, text_queue, stop_event):
 
 
 # -----------------------------------------------------------------------------
+# AI prompts storage and OpenAI summary
+# -----------------------------------------------------------------------------
+
+PROMPTS_FILE = Path(__file__).resolve().parent / "prompts.json"
+TRANSCRIPT_PLACEHOLDER = "{{transcript}}"
+
+
+def load_prompts():
+    """Load prompt templates from JSON file. Returns list of dicts with id, name, prompt."""
+    if not PROMPTS_FILE.exists():
+        return []
+    try:
+        with open(PROMPTS_FILE, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        return data if isinstance(data, list) else []
+    except Exception:
+        return []
+
+
+def save_prompts(prompts):
+    """Save prompt templates to JSON file."""
+    with open(PROMPTS_FILE, "w", encoding="utf-8") as f:
+        json.dump(prompts, f, indent=2, ensure_ascii=False)
+
+
+def add_prompt(name, prompt_text):
+    """Add a new prompt template. Returns the new prompt dict."""
+    prompts = load_prompts()
+    p = {"id": str(uuid.uuid4()), "name": name, "prompt": prompt_text}
+    prompts.append(p)
+    save_prompts(prompts)
+    return p
+
+
+def update_prompt(prompt_id, name, prompt_text):
+    """Update an existing prompt. Returns True if found."""
+    prompts = load_prompts()
+    for p in prompts:
+        if p.get("id") == prompt_id:
+            p["name"] = name
+            p["prompt"] = prompt_text
+            save_prompts(prompts)
+            return True
+    return False
+
+
+def delete_prompt(prompt_id):
+    """Delete a prompt by id. Returns True if found and deleted."""
+    prompts = load_prompts()
+    new_list = [p for p in prompts if p.get("id") != prompt_id]
+    if len(new_list) == len(prompts):
+        return False
+    save_prompts(new_list)
+    return True
+
+
+def get_prompt_by_id(prompt_id):
+    """Return prompt dict by id or None."""
+    for p in load_prompts():
+        if p.get("id") == prompt_id:
+            return p
+    return None
+
+
+def generate_ai_summary(api_key, prompt_template, transcript):
+    """
+    Call OpenAI API to generate summary. Runs in thread.
+    Returns (success, result_text_or_error).
+    """
+    if not (prompt_template or "").strip():
+        return False, "Prompt template is empty."
+    if not (transcript or "").strip():
+        return False, "Transcript is empty."
+    text = prompt_template.replace(TRANSCRIPT_PLACEHOLDER, transcript)
+    try:
+        from openai import OpenAI
+    except ImportError:
+        return False, "The 'openai' package is not installed. Run: pip install openai"
+    try:
+        client = OpenAI(api_key=api_key)
+        response = client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[{"role": "user", "content": text}],
+        )
+        content = response.choices[0].message.content
+        return True, (content or "").strip()
+    except Exception as e:
+        return False, str(e)
+
+
+# -----------------------------------------------------------------------------
 # GUI
 # -----------------------------------------------------------------------------
 
@@ -295,6 +395,88 @@ def start_stop(app):
     app.stop_btn.configure(state="normal")
     app.status_var.set("Recording & transcribing…")
     poll_text_queue(app)
+
+
+def _open_edit_prompt_dialog(parent, prompt_id, on_saved, ui_pad, ui_radius, font_family, font_sizes, colors):
+    """Open dialog to add or edit a prompt template (name + prompt text with {{transcript}})."""
+    prompt = get_prompt_by_id(prompt_id) if prompt_id else None
+    is_new = prompt is None
+
+    win = ctk.CTkToplevel(parent)
+    win.title("Add prompt" if is_new else "Edit prompt")
+    win.geometry("520x380")
+    win.transient(parent)
+    # Defer grab until window is viewable (avoids TclError: grab failed: window not viewable)
+    def _set_grab():
+        try:
+            win.grab_set()
+        except Exception:
+            pass
+    win.after(100, _set_grab)
+
+    ctk.CTkLabel(
+        win,
+        text="Name",
+        font=ctk.CTkFont(family=font_family, size=font_sizes.small),
+    ).pack(anchor="w", padx=ui_pad, pady=(ui_pad, 2))
+    name_var = ctk.StringVar(value=prompt.get("name", "") if prompt else "")
+    name_entry = ctk.CTkEntry(win, width=400, height=32, font=ctk.CTkFont(family=font_family, size=font_sizes.body))
+    name_entry.pack(anchor="w", padx=ui_pad, pady=(0, ui_pad))
+    name_entry.insert(0, name_var.get())
+
+    ctk.CTkLabel(
+        win,
+        text="Prompt (use {{transcript}} where the transcript should go)",
+        font=ctk.CTkFont(family=font_family, size=font_sizes.small),
+    ).pack(anchor="w", padx=ui_pad, pady=(ui_pad, 2))
+    prompt_text = ctk.CTkTextbox(win, width=500, height=180, font=ctk.CTkFont(family=font_family, size=font_sizes.small))
+    prompt_text.pack(anchor="w", padx=ui_pad, pady=(0, ui_pad))
+    if prompt:
+        prompt_text.insert("1.0", prompt.get("prompt", ""))
+
+    def save():
+        name = name_entry.get().strip()
+        text = prompt_text.get("1.0", "end").strip()
+        if not name:
+            messagebox.showwarning("Missing name", "Please enter a name for the prompt.", parent=win)
+            return
+        if not text:
+            messagebox.showwarning("Missing prompt", "Please enter the prompt text.", parent=win)
+            return
+        if TRANSCRIPT_PLACEHOLDER not in text:
+            if not messagebox.askyesno("No placeholder", f"Prompt does not contain '{TRANSCRIPT_PLACEHOLDER}'. Add it so the transcript is inserted?", parent=win):
+                return
+        if is_new:
+            add_prompt(name, text)
+        else:
+            update_prompt(prompt_id, name, text)
+        on_saved()
+        win.destroy()
+
+    btn_frame = ctk.CTkFrame(win, fg_color="transparent")
+    btn_frame.pack(fill="x", padx=ui_pad, pady=ui_pad)
+    ctk.CTkButton(
+        btn_frame,
+        text="Save",
+        font=ctk.CTkFont(family=font_family, size=font_sizes.small),
+        width=80,
+        height=32,
+        corner_radius=ui_radius,
+        fg_color=colors["primary_fg"],
+        hover_color=colors["primary_hover"],
+        command=save,
+    ).pack(side="left", padx=(0, ui_pad))
+    ctk.CTkButton(
+        btn_frame,
+        text="Cancel",
+        font=ctk.CTkFont(family=font_family, size=font_sizes.small),
+        width=80,
+        height=32,
+        corner_radius=ui_radius,
+        fg_color=colors["secondary_fg"],
+        hover_color=colors["secondary_hover"],
+        command=win.destroy,
+    ).pack(side="left")
 
 
 # -----------------------------------------------------------------------------
@@ -466,7 +648,7 @@ def main():
         command=refresh_sidebar_models,
     ).pack(pady=(4, UI_PAD))
 
-    # ---- Right: main content (header + transcript + footer) ----
+    # ---- Right: main content (header + tabview + footer) ----
     main_content = ctk.CTkFrame(content_frame, fg_color="transparent")
     main_content.pack(side="left", fill="both", expand=True)
 
@@ -508,9 +690,15 @@ def main():
     )
     app.stop_btn.pack(side="left")
 
-    # Transcript card
-    card = ctk.CTkFrame(main_content, fg_color=COLORS["card"], corner_radius=UI_RADIUS)
-    card.pack(fill="both", expand=True, pady=(0, UI_PAD))
+    # Tabview: Transcript | AI Prompts
+    tabview = ctk.CTkTabview(main_content, fg_color=COLORS["card"], corner_radius=UI_RADIUS)
+    tabview.pack(fill="both", expand=True, pady=(0, UI_PAD))
+    tab_transcript = tabview.add("Transcript")
+    tab_prompts = tabview.add("AI Prompts")
+
+    # ---- Transcript tab ----
+    card = ctk.CTkFrame(tab_transcript, fg_color="transparent")
+    card.pack(fill="both", expand=True)
     card_header = ctk.CTkFrame(card, fg_color="transparent")
     card_header.pack(fill="x", padx=UI_PAD_LG, pady=(UI_PAD, 4))
     ctk.CTkLabel(
@@ -527,19 +715,6 @@ def main():
             root.update()  # keep clipboard content after window loses focus
     def clear_transcript():
         app.log.delete("1.0", "end")
-    # Clear on the right
-    ctk.CTkButton(
-        card_header,
-        text="Clear",
-        font=ctk.CTkFont(family=UI_FONT_FAMILY, size=F.small),
-        width=80,
-        height=36,
-        corner_radius=UI_RADIUS,
-        fg_color=COLORS["secondary_fg"],
-        hover_color=COLORS["secondary_hover"],
-        command=clear_transcript,
-    ).pack(side="right", padx=UI_PAD, pady=4)
-    # Copy transcript next to the Transcript header (left side)
     ctk.CTkButton(
         card_header,
         text="Copy transcript",
@@ -551,6 +726,17 @@ def main():
         hover_color=COLORS["secondary_hover"],
         command=copy_transcript,
     ).pack(side="left", padx=(UI_PAD, 0), pady=4)
+    ctk.CTkButton(
+        card_header,
+        text="Clear",
+        font=ctk.CTkFont(family=UI_FONT_FAMILY, size=F.small),
+        width=80,
+        height=36,
+        corner_radius=UI_RADIUS,
+        fg_color=COLORS["secondary_fg"],
+        hover_color=COLORS["secondary_hover"],
+        command=clear_transcript,
+    ).pack(side="right", padx=UI_PAD, pady=4)
     app.log = ctk.CTkTextbox(
         card,
         wrap="word",
@@ -560,7 +746,259 @@ def main():
         fg_color=COLORS["textbox_bg"],
         border_spacing=UI_PAD,
     )
-    app.log.pack(fill="both", expand=True, padx=UI_PAD_LG, pady=(0, UI_PAD_LG))
+    app.log.pack(fill="both", expand=True, padx=UI_PAD_LG, pady=(0, UI_PAD))
+
+    # AI Summary section: header with prompt selector and Generate button
+    summary_header = ctk.CTkFrame(card, fg_color="transparent")
+    summary_header.pack(fill="x", padx=UI_PAD_LG, pady=(UI_PAD, 4))
+    ctk.CTkLabel(
+        summary_header,
+        text="AI Summary",
+        font=ctk.CTkFont(family=UI_FONT_FAMILY, size=F.header, weight="bold"),
+    ).pack(side="left")
+    # Prompt template selector (refresh list from prompts file)
+    _prompts_for_summary = load_prompts()
+    _prompt_names = [p.get("name", "Unnamed") for p in _prompts_for_summary] or ["(No prompts — add in AI Prompts tab)"]
+    app.summary_prompt_var = ctk.StringVar(value=_prompt_names[0])
+    app.summary_prompt_menu = ctk.CTkOptionMenu(
+        summary_header,
+        values=_prompt_names,
+        variable=app.summary_prompt_var,
+        width=220,
+        font=ctk.CTkFont(family=UI_FONT_FAMILY, size=F.small),
+    )
+    app.summary_prompt_menu.pack(side="left", padx=(UI_PAD, 0), pady=4)
+    app.summary_status_var = ctk.StringVar(value="")
+    ctk.CTkLabel(
+        summary_header,
+        textvariable=app.summary_status_var,
+        font=ctk.CTkFont(family=UI_FONT_FAMILY, size=F.small),
+        text_color="gray",
+    ).pack(side="left", padx=(UI_PAD, 0), pady=4)
+
+    def _refresh_summary_prompt_menu():
+        prompts = load_prompts()
+        names = [p.get("name", "Unnamed") for p in prompts] or ["(No prompts — add in AI Prompts tab)"]
+        app.summary_prompt_menu.configure(values=names)
+        if names and (app.summary_prompt_var.get() not in names):
+            app.summary_prompt_var.set(names[0])
+
+    def _do_ai_summary():
+        load_dotenv()
+        api_key = os.environ.get("OPENAI_API_KEY", "").strip()
+        if not api_key:
+            messagebox.showerror("API key required", "Set OPENAI_API_KEY in your environment or .env file.", parent=root)
+            return
+        prompts = load_prompts()
+        if not prompts:
+            messagebox.showinfo("No prompts", "Create at least one prompt in the 'AI Prompts' tab first.", parent=root)
+            return
+        name = app.summary_prompt_var.get()
+        prompt_obj = next((p for p in prompts if p.get("name") == name), None)
+        if not prompt_obj or name.startswith("("):
+            messagebox.showwarning("Select a prompt", "Choose a prompt template from the dropdown.", parent=root)
+            return
+        transcript = app.log.get("1.0", "end").strip()
+        if not transcript:
+            messagebox.showwarning("Empty transcript", "Transcript is empty. Record or paste some text first.", parent=root)
+            return
+        app.summary_generate_btn.configure(state="disabled")
+        app.summary_status_var.set("Generating…")
+        result_holder = []
+
+        def worker():
+            ok, out = generate_ai_summary(api_key, prompt_obj["prompt"], transcript)
+            result_holder.append((ok, out))
+
+        def check_done():
+            if not result_holder:
+                root.after(200, check_done)
+                return
+            ok, out = result_holder[0]
+            app.summary_generate_btn.configure(state="normal")
+            app.summary_status_var.set("")
+            if ok:
+                app.summary_text.delete("1.0", "end")
+                app.summary_text.insert("1.0", out)
+            else:
+                messagebox.showerror("AI Summary failed", out, parent=root)
+
+        threading.Thread(target=worker, daemon=True).start()
+        root.after(200, check_done)
+
+    app.summary_generate_btn = ctk.CTkButton(
+        summary_header,
+        text="Generate",
+        font=ctk.CTkFont(family=UI_FONT_FAMILY, size=F.small),
+        width=100,
+        height=36,
+        corner_radius=UI_RADIUS,
+        fg_color=COLORS["primary_fg"],
+        hover_color=COLORS["primary_hover"],
+        command=_do_ai_summary,
+    )
+    app.summary_generate_btn.pack(side="left", padx=(UI_PAD, 0), pady=4)
+    ctk.CTkButton(
+        summary_header,
+        text="Refresh list",
+        font=ctk.CTkFont(family=UI_FONT_FAMILY, size=F.tiny),
+        width=80,
+        height=28,
+        corner_radius=UI_RADIUS,
+        fg_color=COLORS["secondary_fg"],
+        hover_color=COLORS["secondary_hover"],
+        command=_refresh_summary_prompt_menu,
+    ).pack(side="left", padx=(UI_PAD, 0), pady=4)
+    # Export: naming field + Export button (saves summary + transcript as markdown)
+    ctk.CTkLabel(
+        summary_header,
+        text="Export:",
+        font=ctk.CTkFont(family=UI_FONT_FAMILY, size=F.small),
+    ).pack(side="left", padx=(UI_PAD_LG, 4), pady=4)
+    app.export_name_var = ctk.StringVar(value="")
+    app.export_name_entry = ctk.CTkEntry(
+        summary_header,
+        textvariable=app.export_name_var,
+        width=160,
+        height=28,
+        placeholder_text="e.g. meeting-notes",
+        font=ctk.CTkFont(family=UI_FONT_FAMILY, size=F.small),
+    )
+    app.export_name_entry.pack(side="left", padx=4, pady=4)
+
+    def _export_markdown():
+        summary = app.summary_text.get("1.0", "end").strip()
+        transcript = app.log.get("1.0", "end").strip()
+        if not summary and not transcript:
+            messagebox.showwarning("Nothing to export", "Add an AI summary and/or transcript first.", parent=root)
+            return
+        name_part = (app.export_name_var.get() or "").strip()
+        # Sanitize for filename: replace spaces and invalid chars with hyphen
+        if name_part:
+            name_part = "".join(c if c.isalnum() or c in "._- " else "-" for c in name_part)
+            name_part = name_part.replace(" ", "-").strip("-") or "export"
+        else:
+            name_part = "export"
+        default_name = f"{date.today().isoformat()} {name_part}.md"
+        path = filedialog.asksaveasfilename(
+            parent=root,
+            defaultextension=".md",
+            filetypes=[("Markdown", "*.md"), ("All files", "*.*")],
+            initialfile=default_name,
+        )
+        if not path:
+            return
+        parts = []
+        if summary:
+            parts.append("## Summary\n\n" + summary)
+        if transcript:
+            parts.append("## Transcript\n\n" + transcript)
+        content = "\n\n---\n\n".join(parts) + "\n"
+        try:
+            with open(path, "w", encoding="utf-8") as f:
+                f.write(content)
+            messagebox.showinfo("Exported", f"Saved to {path}", parent=root)
+        except Exception as e:
+            messagebox.showerror("Export failed", str(e), parent=root)
+
+    ctk.CTkButton(
+        summary_header,
+        text="Export",
+        font=ctk.CTkFont(family=UI_FONT_FAMILY, size=F.small),
+        width=80,
+        height=28,
+        corner_radius=UI_RADIUS,
+        fg_color=COLORS["secondary_fg"],
+        hover_color=COLORS["secondary_hover"],
+        command=_export_markdown,
+    ).pack(side="left", padx=(UI_PAD, 0), pady=4)
+
+    app.summary_text = ctk.CTkTextbox(
+        card,
+        wrap="word",
+        font=ctk.CTkFont(family=MONO_FONT_FAMILY, size=F.body),
+        corner_radius=8,
+        border_width=0,
+        fg_color=COLORS["textbox_bg"],
+        border_spacing=UI_PAD,
+    )
+    app.summary_text.pack(fill="both", expand=True, padx=UI_PAD_LG, pady=(0, UI_PAD_LG))
+
+    # ---- AI Prompts tab: list, add, edit, delete ----
+    ctk.CTkLabel(
+        tab_prompts,
+        text="Custom prompt templates for AI Summary. Use {{transcript}} where the transcript should be inserted.",
+        font=ctk.CTkFont(family=UI_FONT_FAMILY, size=F.small),
+        text_color="gray",
+        wraplength=500,
+    ).pack(anchor="w", padx=UI_PAD_LG, pady=(UI_PAD, 4))
+    prompts_scroll = ctk.CTkScrollableFrame(tab_prompts, fg_color="transparent")
+    prompts_scroll.pack(fill="both", expand=True, padx=UI_PAD_LG, pady=UI_PAD)
+
+    def refresh_prompts_list():
+        for w in prompts_scroll.winfo_children():
+            w.destroy()
+        prompts = load_prompts()
+        if not prompts:
+            ctk.CTkLabel(
+                prompts_scroll,
+                text="No prompts yet. Click 'Add prompt' to create one.",
+                font=ctk.CTkFont(family=UI_FONT_FAMILY, size=F.small),
+                text_color="gray",
+            ).pack(anchor="w", padx=UI_PAD, pady=8)
+        for p in prompts:
+            row = ctk.CTkFrame(prompts_scroll, fg_color="transparent")
+            row.pack(fill="x", pady=4)
+            ctk.CTkLabel(
+                row,
+                text=p.get("name", "Unnamed"),
+                font=ctk.CTkFont(family=UI_FONT_FAMILY, size=F.body, weight="bold"),
+                anchor="w",
+            ).pack(side="left", padx=(UI_PAD, 8))
+            def _edit(pid=p["id"]):
+                _open_edit_prompt_dialog(root, pid, refresh_prompts_list, UI_PAD, UI_RADIUS, UI_FONT_FAMILY, F, COLORS)
+            def _delete(pid=p["id"], pname=p.get("name", "?")):
+                if not messagebox.askyesno("Delete prompt", f"Delete prompt '{pname}'?"):
+                    return
+                if delete_prompt(pid):
+                    refresh_prompts_list()
+                    messagebox.showinfo("Deleted", "Prompt deleted.")
+            ctk.CTkButton(
+                row,
+                text="Edit",
+                width=60,
+                height=28,
+                font=ctk.CTkFont(family=UI_FONT_FAMILY, size=F.tiny),
+                corner_radius=UI_RADIUS,
+                fg_color=COLORS["secondary_fg"],
+                hover_color=COLORS["secondary_hover"],
+                command=_edit,
+            ).pack(side="right", padx=4)
+            ctk.CTkButton(
+                row,
+                text="Delete",
+                width=60,
+                height=28,
+                font=ctk.CTkFont(family=UI_FONT_FAMILY, size=F.tiny),
+                corner_radius=UI_RADIUS,
+                fg_color=COLORS["danger_fg"],
+                hover_color=COLORS["danger_hover"],
+                command=_delete,
+            ).pack(side="right", padx=(0, UI_PAD))
+
+    def add_new_prompt():
+        _open_edit_prompt_dialog(root, None, refresh_prompts_list, UI_PAD, UI_RADIUS, UI_FONT_FAMILY, F, COLORS)
+
+    refresh_prompts_list()
+    ctk.CTkButton(
+        tab_prompts,
+        text="Add prompt",
+        font=ctk.CTkFont(family=UI_FONT_FAMILY, size=F.small),
+        corner_radius=UI_RADIUS,
+        fg_color=COLORS["primary_fg"],
+        hover_color=COLORS["primary_hover"],
+        command=add_new_prompt,
+    ).pack(anchor="w", padx=UI_PAD_LG, pady=(4, UI_PAD))
 
     # Footer: device info
     devices, _ = list_audio_devices()
