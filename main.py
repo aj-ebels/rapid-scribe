@@ -332,13 +332,45 @@ def main():
 
     # CustomTkinter theme and scaling (before creating window)
     ctk.set_appearance_mode("dark")
-    ctk.set_default_color_theme("dark-blue")
+    theme_path = Path(__file__).resolve().parent / "themes" / "meetings-dark.json"
+    if theme_path.exists():
+        ctk.set_default_color_theme(str(theme_path))
+    else:
+        ctk.set_default_color_theme("dark-blue")
     scale = _get_dpi_scale()
     ctk.set_widget_scaling(scale)
     ctk.set_window_scaling(scale)
-    # Font sizes: large bases and aggressive scale (min 16, max 36)
-    _fs = lambda base: max(16, min(36, round(base * scale)))
-    F = type("F", (), {"title": _fs(22), "header": _fs(20), "body": _fs(19), "small": _fs(17), "tiny": _fs(16)})()
+    # Font sizes: clean app-like scale (cap 12–22)
+    _fs = lambda base: max(12, min(22, round(base * scale)))
+    F = type("F", (), {"title": _fs(18), "header": _fs(16), "body": _fs(14), "small": _fs(13), "tiny": _fs(12)})()
+
+    # UI theme constants (spacing, radius, colors)
+    UI_RADIUS = 10
+    UI_PAD = 12
+    UI_PAD_LG = 16
+    COLORS = {
+        "sidebar": ("gray88", "gray18"),
+        "card": ("gray92", "gray18"),
+        "header": ("gray92", "gray18"),
+        "primary_fg": ("#2e7d32", "#1b5e20"),
+        "primary_hover": ("#388e3c", "#2e7d32"),
+        "danger_fg": ("#c62828", "#b71c1c"),
+        "danger_hover": ("#d32f2f", "#c62828"),
+        "secondary_fg": ("gray70", "gray35"),
+        "secondary_hover": ("gray60", "gray45"),
+        "textbox_bg": ("gray97", "gray14"),
+        "error_text": ("red", "#f7768e"),
+    }
+    # Modern UI font per platform (mono kept for transcript only)
+    if sys.platform == "win32":
+        UI_FONT_FAMILY = "Segoe UI"
+        MONO_FONT_FAMILY = "Consolas"
+    elif sys.platform == "darwin":
+        UI_FONT_FAMILY = "SF Pro Display"
+        MONO_FONT_FAMILY = "SF Mono"
+    else:
+        UI_FONT_FAMILY = "Ubuntu"
+        MONO_FONT_FAMILY = "Ubuntu Mono"
 
     root = ctk.CTk()
     root.title("System Audio → Real-time Transcription")
@@ -356,17 +388,17 @@ def main():
 
     # Main horizontal layout: sidebar | content
     content_frame = ctk.CTkFrame(root, fg_color="transparent")
-    content_frame.pack(fill="both", expand=True, padx=8, pady=8)
+    content_frame.pack(fill="both", expand=True, padx=UI_PAD, pady=UI_PAD)
 
     # ---- Left sidebar: installed transcription models ----
-    sidebar = ctk.CTkFrame(content_frame, width=260, corner_radius=0, fg_color=("gray85", "gray20"))
-    sidebar.pack(side="left", fill="y", padx=(0, 8))
+    sidebar = ctk.CTkFrame(content_frame, width=260, corner_radius=UI_RADIUS, fg_color=COLORS["sidebar"])
+    sidebar.pack(side="left", fill="y", padx=(0, UI_PAD))
     sidebar.pack_propagate(False)
     ctk.CTkLabel(
         sidebar,
         text="Installed models",
-        font=ctk.CTkFont(size=F.title, weight="bold"),
-    ).pack(anchor="w", padx=12, pady=(12, 6))
+        font=ctk.CTkFont(family=UI_FONT_FAMILY, size=F.title, weight="bold"),
+    ).pack(anchor="w", padx=UI_PAD, pady=(UI_PAD, 6))
     sidebar_scroll = ctk.CTkScrollableFrame(sidebar, fg_color="transparent")
     sidebar_scroll.pack(fill="both", expand=True)
 
@@ -378,19 +410,19 @@ def main():
             ctk.CTkLabel(
                 sidebar_scroll,
                 text=f"Error: {err[:50]}…" if len(err) > 50 else err,
-                font=ctk.CTkFont(size=F.small),
-                text_color=("red", "#f7768e"),
+                font=ctk.CTkFont(family=UI_FONT_FAMILY, size=F.small),
+                text_color=COLORS["error_text"],
                 wraplength=220,
-            ).pack(anchor="w", padx=8, pady=4)
+            ).pack(anchor="w", padx=UI_PAD, pady=4)
             return
         if not models:
             ctk.CTkLabel(
                 sidebar_scroll,
                 text="No transcription models in cache.",
-                font=ctk.CTkFont(size=F.small),
+                font=ctk.CTkFont(family=UI_FONT_FAMILY, size=F.small),
                 text_color="gray",
                 wraplength=220,
-            ).pack(anchor="w", padx=8, pady=4)
+            ).pack(anchor="w", padx=UI_PAD, pady=4)
             return
         for m in models:
             row = ctk.CTkFrame(sidebar_scroll, fg_color="transparent")
@@ -398,10 +430,10 @@ def main():
             ctk.CTkLabel(
                 row,
                 text=f"{m['repo_id']}\n{m['size_str']}",
-                font=ctk.CTkFont(size=F.small),
+                font=ctk.CTkFont(family=UI_FONT_FAMILY, size=F.small),
                 wraplength=160,
                 anchor="w",
-            ).pack(side="left", padx=(8, 4))
+            ).pack(side="left", padx=(UI_PAD, 4))
             def _uninstall(repo_id=m["repo_id"], hashes=m["revision_hashes"]):
                 if not messagebox.askyesno("Uninstall model", f"Delete cached model '{repo_id}'? This frees disk space; you can re-download later."):
                     return
@@ -415,74 +447,76 @@ def main():
                 row,
                 text="Uninstall",
                 width=70,
-                height=24,
-                font=ctk.CTkFont(size=F.tiny),
-                fg_color=("#c94c6c", "#e06c7a"),
-                hover_color=("#a83d58", "#c95a68"),
+                height=28,
+                font=ctk.CTkFont(family=UI_FONT_FAMILY, size=F.tiny),
+                corner_radius=UI_RADIUS,
+                fg_color=COLORS["danger_fg"],
+                hover_color=COLORS["danger_hover"],
                 command=_uninstall,
-            ).pack(side="right", padx=(0, 8))
+            ).pack(side="right", padx=(0, UI_PAD))
 
     refresh_sidebar_models()
     ctk.CTkButton(
         sidebar,
         text="Refresh list",
-        font=ctk.CTkFont(size=F.small),
-        fg_color=("gray70", "gray35"),
-        hover_color=("gray60", "gray40"),
+        font=ctk.CTkFont(family=UI_FONT_FAMILY, size=F.small),
+        corner_radius=UI_RADIUS,
+        fg_color=COLORS["secondary_fg"],
+        hover_color=COLORS["secondary_hover"],
         command=refresh_sidebar_models,
-    ).pack(pady=(4, 12))
+    ).pack(pady=(4, UI_PAD))
 
     # ---- Right: main content (header + transcript + footer) ----
     main_content = ctk.CTkFrame(content_frame, fg_color="transparent")
     main_content.pack(side="left", fill="both", expand=True)
 
     # Header bar
-    header = ctk.CTkFrame(main_content, fg_color=("gray90", "gray20"), corner_radius=0, height=52)
-    header.pack(fill="x", pady=(0, 8))
+    header = ctk.CTkFrame(main_content, fg_color=COLORS["header"], corner_radius=UI_RADIUS, height=52)
+    header.pack(fill="x", pady=(0, UI_PAD))
     header.pack_propagate(False)
     app.status_var = ctk.StringVar(value="Ready — click Start to begin")
     ctk.CTkLabel(
         header,
         textvariable=app.status_var,
-        font=ctk.CTkFont(size=F.header, weight="bold"),
-    ).pack(side="left", padx=16, pady=12)
+        font=ctk.CTkFont(family=UI_FONT_FAMILY, size=F.header, weight="bold"),
+    ).pack(side="left", padx=UI_PAD_LG, pady=UI_PAD)
     btn_frame = ctk.CTkFrame(header, fg_color="transparent")
-    btn_frame.pack(side="right", padx=16, pady=8)
+    btn_frame.pack(side="right", padx=UI_PAD_LG, pady=UI_PAD)
     app.start_btn = ctk.CTkButton(
         btn_frame,
         text="Start",
         command=lambda: start_stop(app),
-        font=ctk.CTkFont(size=F.header, weight="bold"),
+        font=ctk.CTkFont(family=UI_FONT_FAMILY, size=F.header, weight="bold"),
         width=100,
         height=36,
-        corner_radius=0,
-        fg_color=("#2e7d32", "#1b5e20"),
-        hover_color=("#388e3c", "#2e7d32"),
+        corner_radius=UI_RADIUS,
+        fg_color=COLORS["primary_fg"],
+        hover_color=COLORS["primary_hover"],
     )
-    app.start_btn.pack(side="left", padx=(0, 8))
+    app.start_btn.pack(side="left", padx=(0, UI_PAD))
     app.stop_btn = ctk.CTkButton(
         btn_frame,
         text="Stop",
         command=lambda: start_stop(app),
         state="disabled",
-        font=ctk.CTkFont(size=F.header, weight="bold"),
+        font=ctk.CTkFont(family=UI_FONT_FAMILY, size=F.header, weight="bold"),
         width=100,
         height=36,
-        corner_radius=0,
-        fg_color=("#c62828", "#b71c1c"),
-        hover_color=("#d32f2f", "#c62828"),
+        corner_radius=UI_RADIUS,
+        fg_color=COLORS["danger_fg"],
+        hover_color=COLORS["danger_hover"],
     )
     app.stop_btn.pack(side="left")
 
     # Transcript card
-    card = ctk.CTkFrame(main_content, fg_color=("gray90", "gray20"), corner_radius=0)
-    card.pack(fill="both", expand=True, pady=(0, 8))
+    card = ctk.CTkFrame(main_content, fg_color=COLORS["card"], corner_radius=UI_RADIUS)
+    card.pack(fill="both", expand=True, pady=(0, UI_PAD))
     card_header = ctk.CTkFrame(card, fg_color="transparent")
-    card_header.pack(fill="x", padx=16, pady=(12, 4))
+    card_header.pack(fill="x", padx=UI_PAD_LG, pady=(UI_PAD, 4))
     ctk.CTkLabel(
         card_header,
         text="Transcript",
-        font=ctk.CTkFont(size=F.header, weight="bold"),
+        font=ctk.CTkFont(family=UI_FONT_FAMILY, size=F.header, weight="bold"),
     ).pack(side="left")
     def copy_transcript():
         text = app.log.get("1.0", "end")
@@ -497,36 +531,36 @@ def main():
     ctk.CTkButton(
         card_header,
         text="Clear",
-        font=ctk.CTkFont(size=F.small),
+        font=ctk.CTkFont(family=UI_FONT_FAMILY, size=F.small),
         width=80,
         height=36,
-        corner_radius=0,
-        fg_color=("gray70", "gray35"),
-        hover_color=("gray60", "gray45"),
+        corner_radius=UI_RADIUS,
+        fg_color=COLORS["secondary_fg"],
+        hover_color=COLORS["secondary_hover"],
         command=clear_transcript,
-    ).pack(side="right", padx=8, pady=4)
+    ).pack(side="right", padx=UI_PAD, pady=4)
     # Copy transcript next to the Transcript header (left side)
     ctk.CTkButton(
         card_header,
         text="Copy transcript",
-        font=ctk.CTkFont(size=F.small),
+        font=ctk.CTkFont(family=UI_FONT_FAMILY, size=F.small),
         width=140,
         height=36,
-        corner_radius=0,
-        fg_color=("gray70", "gray35"),
-        hover_color=("gray60", "gray45"),
+        corner_radius=UI_RADIUS,
+        fg_color=COLORS["secondary_fg"],
+        hover_color=COLORS["secondary_hover"],
         command=copy_transcript,
-    ).pack(side="left", padx=(12, 0), pady=4)
+    ).pack(side="left", padx=(UI_PAD, 0), pady=4)
     app.log = ctk.CTkTextbox(
         card,
         wrap="word",
-        font=ctk.CTkFont(family="Consolas", size=F.body),
-        corner_radius=0,
+        font=ctk.CTkFont(family=MONO_FONT_FAMILY, size=F.body),
+        corner_radius=8,
         border_width=0,
-        fg_color=("gray95", "gray15"),
-        border_spacing=12,
+        fg_color=COLORS["textbox_bg"],
+        border_spacing=UI_PAD,
     )
-    app.log.pack(fill="both", expand=True, padx=16, pady=(0, 16))
+    app.log.pack(fill="both", expand=True, padx=UI_PAD_LG, pady=(0, UI_PAD_LG))
 
     # Footer: device info
     devices, _ = list_audio_devices()
@@ -541,9 +575,9 @@ def main():
     ctk.CTkLabel(
         main_content,
         text=dev_info,
-        font=ctk.CTkFont(size=F.small),
+        font=ctk.CTkFont(family=UI_FONT_FAMILY, size=F.small),
         text_color="gray",
-    ).pack(anchor="w", padx=16, pady=(0, 12))
+    ).pack(anchor="w", padx=UI_PAD_LG, pady=(0, UI_PAD))
 
     root.protocol("WM_DELETE_WINDOW", lambda: (app.stop_event.set(), root.destroy()))
     root.mainloop()
