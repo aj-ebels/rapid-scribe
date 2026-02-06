@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """
 Real-time system audio capture and transcription.
-Uses PulseAudio Monitor / RDPSource on WSL2, faster-whisper, and Tkinter GUI.
+Uses PulseAudio Monitor / RDPSource on WSL2, NVIDIA Parakeet (onnx-asr), and CustomTkinter GUI.
+Same Parakeet/ONNX stack as Meetily: https://github.com/Zackriya-Solutions/meeting-minutes
 """
 
 import os
@@ -10,29 +11,100 @@ import threading
 import queue
 from pathlib import Path
 
-# Ensure WSLg can display the GUI (PulseAudio + X11/Wayland)
-if "WSL" in os.uname().release or "microsoft" in os.uname().release.lower():
-    if "DISPLAY" not in os.environ or not os.environ["DISPLAY"].strip():
-        os.environ.setdefault("DISPLAY", ":0")
-    # Optional: ensure Wayland/Xwayland is used if available
-    if "WAYLAND_DISPLAY" not in os.environ and "DISPLAY" in os.environ:
-        pass  # DISPLAY already set
+# Ensure WSLg can display the GUI (PulseAudio + X11/Wayland). No-op on Windows.
+try:
+    release = os.uname().release
+    if "WSL" in release or "microsoft" in release.lower():
+        if "DISPLAY" not in os.environ or not os.environ["DISPLAY"].strip():
+            os.environ.setdefault("DISPLAY", ":0")
+except AttributeError:
+    pass  # os.uname() not available (e.g. Windows)
 
 import numpy as np
 import sounddevice as sd
 from scipy.io import wavfile
-import tkinter as tk
-from tkinter import scrolledtext, font as tkfont, ttk
+import customtkinter as ctk
+from tkinter import messagebox
 
-# Lazy import to avoid loading model until needed
-_faster_whisper = None
+# Lazy load Parakeet via onnx-asr (same stack as Meetily: istupakov ONNX Parakeet)
+# Model: nemo-parakeet-tdt-0.6b-v2 (en) or nemo-parakeet-tdt-0.6b-v3 (multilingual)
+PARAKEET_MODEL = "nemo-parakeet-tdt-0.6b-v2"
+_parakeet_model = None
 
-def get_whisper_model():
-    global _faster_whisper
-    if _faster_whisper is None:
-        from faster_whisper import WhisperModel
-        _faster_whisper = WhisperModel("base.en", device="cpu", compute_type="int8")
-    return _faster_whisper
+def get_transcription_model():
+    global _parakeet_model
+    if _parakeet_model is None:
+        import onnx_asr
+        _parakeet_model = onnx_asr.load_model(
+            PARAKEET_MODEL,
+            quantization="int8",  # faster on CPU, similar to previous Whisper int8
+        )
+    return _parakeet_model
+
+
+# -----------------------------------------------------------------------------
+# Installed transcription models (Hugging Face cache)
+# -----------------------------------------------------------------------------
+
+# Substrings in repo_id that we treat as "transcription" models (ASR, Whisper, Parakeet, etc.)
+ASR_REPO_PATTERNS = (
+    "parakeet", "whisper", "asr", "speech", "stt", "vosk", "gigaam", "canary",
+    "conformer", "transcribe",
+)
+
+
+def _format_size(num_bytes):
+    if num_bytes < 1024:
+        return f"{num_bytes} B"
+    if num_bytes < 1024 * 1024:
+        return f"{num_bytes / 1024:.1f} KB"
+    if num_bytes < 1024 * 1024 * 1024:
+        return f"{num_bytes / (1024 * 1024):.1f} MB"
+    return f"{num_bytes / (1024 * 1024 * 1024):.1f} GB"
+
+
+def list_installed_transcription_models():
+    """List cached Hugging Face models that look like ASR/transcription. Returns list of dicts."""
+    try:
+        from huggingface_hub import scan_cache_dir
+    except ImportError:
+        return [], "huggingface_hub not installed"
+    try:
+        cache = scan_cache_dir()
+    except Exception as e:
+        return [], str(e)
+    out = []
+    for repo in cache.repos:
+        if repo.repo_type != "model":
+            continue
+        rid = (repo.repo_id or "").lower()
+        if not any(p in rid for p in ASR_REPO_PATTERNS):
+            continue
+        out.append({
+            "repo_id": repo.repo_id,
+            "size_on_disk": repo.size_on_disk,
+            "size_str": _format_size(repo.size_on_disk),
+            "revision_hashes": [r.commit_hash for r in repo.revisions],
+        })
+    out.sort(key=lambda x: x["repo_id"])
+    return out, None
+
+
+def uninstall_transcription_model(repo_id, revision_hashes):
+    """Remove a cached model from the Hugging Face cache. Returns (success, error_message)."""
+    if not revision_hashes:
+        return False, "No revisions to delete"
+    try:
+        from huggingface_hub import scan_cache_dir
+    except ImportError:
+        return False, "huggingface_hub not installed"
+    try:
+        cache = scan_cache_dir()
+        strategy = cache.delete_revisions(*revision_hashes)
+        strategy.execute()
+        return True, None
+    except Exception as e:
+        return False, str(e)
 
 
 # -----------------------------------------------------------------------------
@@ -90,13 +162,23 @@ CHUNK_DURATION_SEC = 5.0
 CHUNK_SAMPLES = int(SAMPLE_RATE * CHUNK_DURATION_SEC)
 CHUNK_PATH = Path("/tmp/chunk.wav")
 
+# Skip transcribing chunks that are effectively silent (avoids Whisper "hallucinations"
+# where it invents phrases like "Thanks for watching" when there's no real speech).
+SILENCE_RMS_THRESHOLD = 0.01  # float32 RMS; increase if real speech is being skipped
+
+
+def _is_silent(chunk: np.ndarray) -> bool:
+    """True if chunk has very low energy (silence or negligible noise)."""
+    rms = np.sqrt(np.mean(chunk.astype(np.float64) ** 2))
+    return rms < SILENCE_RMS_THRESHOLD
+
 
 # -----------------------------------------------------------------------------
 # Audio capture thread
 # -----------------------------------------------------------------------------
 
 def capture_worker(device_index, chunk_queue, stop_event):
-    """Record 5-second chunks; save to /tmp/chunk.wav, put path in queue (blocking so no overwrite)."""
+    """Record chunks; save to /tmp/chunk.wav only when not silent, put path in queue."""
     while not stop_event.is_set():
         try:
             chunk = sd.rec(
@@ -109,6 +191,8 @@ def capture_worker(device_index, chunk_queue, stop_event):
             )
             if stop_event.is_set():
                 break
+            if _is_silent(chunk):
+                continue  # Skip silent chunks — don't send to Whisper (avoids hallucinations)
             chunk_int16 = (np.clip(chunk, -1.0, 1.0) * 32767).astype(np.int16)
             wavfile.write(str(CHUNK_PATH), SAMPLE_RATE, chunk_int16)
             try:
@@ -129,8 +213,8 @@ def capture_worker(device_index, chunk_queue, stop_event):
 # -----------------------------------------------------------------------------
 
 def transcription_worker(chunk_queue, text_queue, stop_event):
-    """Take WAV paths from chunk_queue, transcribe, push text to text_queue, delete file."""
-    model = get_whisper_model()
+    """Take WAV paths from chunk_queue, transcribe with Parakeet, push text to text_queue, delete file."""
+    model = get_transcription_model()
     while not stop_event.is_set():
         try:
             item = chunk_queue.get(timeout=0.5)
@@ -141,10 +225,10 @@ def transcription_worker(chunk_queue, text_queue, stop_event):
             if not Path(path).exists():
                 continue
             try:
-                segments, _ = model.transcribe(path, language="en", beam_size=1)
-                text = " ".join(s.text.strip() for s in segments if s.text).strip()
-                if text:
-                    text_queue.put_nowait(text + "\n")
+                result = model.recognize(path)
+                text = result if isinstance(result, str) else getattr(result, "text", str(result))
+                if text and isinstance(text, str) and text.strip():
+                    text_queue.put_nowait(text.strip() + "\n")
             finally:
                 try:
                     Path(path).unlink(missing_ok=True)
@@ -167,8 +251,8 @@ def poll_text_queue(app):
     try:
         while True:
             line = app.text_queue.get_nowait()
-            app.log.insert(tk.END, line)
-            app.log.see(tk.END)
+            app.log.insert("end", line)
+            app.log.see("end")
     except queue.Empty:
         pass
     if app.running:
@@ -183,16 +267,16 @@ def start_stop(app):
             app.capture_thread.join(timeout=CHUNK_DURATION_SEC + 2)
         if app.transcription_thread and app.transcription_thread.is_alive():
             app.transcription_thread.join(timeout=10)
-        app.start_btn.config(state=tk.NORMAL)
-        app.stop_btn.config(state=tk.DISABLED)
+        app.start_btn.configure(state="normal")
+        app.stop_btn.configure(state="disabled")
         app.status_var.set("Stopped")
         return
     # Start
     app.stop_event.clear()
     dev_idx, err = get_default_monitor_device()
     if err or dev_idx is None:
-        app.log.insert(tk.END, f"[No input device] {err or 'No monitor device found'}\n")
-        app.log.see(tk.END)
+        app.log.insert("end", f"[No input device] {err or 'No monitor device found'}\n")
+        app.log.see("end")
         return
     app.capture_thread = threading.Thread(
         target=capture_worker,
@@ -207,82 +291,59 @@ def start_stop(app):
     app.capture_thread.start()
     app.transcription_thread.start()
     app.running = True
-    app.start_btn.config(state=tk.DISABLED)
-    app.stop_btn.config(state=tk.NORMAL)
+    app.start_btn.configure(state="disabled")
+    app.stop_btn.configure(state="normal")
     app.status_var.set("Recording & transcribing…")
     poll_text_queue(app)
 
 
 # -----------------------------------------------------------------------------
-# Modern GUI theme (dark, minimal)
+# DPI scaling for high-DPI displays (used for CustomTkinter scaling)
 # -----------------------------------------------------------------------------
 
-COLORS = {
-    "bg": "#1a1b26",
-    "bg_card": "#24283b",
-    "bg_input": "#16161e",
-    "fg": "#c0caf5",
-    "fg_muted": "#565f89",
-    "accent_start": "#9ece6a",
-    "accent_stop": "#f7768e",
-    "border": "#3b4261",
-    "font_sans": ("Ubuntu", 11),
-    "font_mono": ("Ubuntu Mono", 11),
-}
 
-
-def setup_modern_theme(root):
-    style = ttk.Style(root)
-    style.theme_use("clam")
-    root.configure(bg=COLORS["bg"])
-
-    style.configure(
-        "Card.TFrame",
-        background=COLORS["bg_card"],
-    )
-    style.configure(
-        "Header.TFrame",
-        background=COLORS["bg_card"],
-    )
-    style.configure(
-        "TLabel",
-        background=COLORS["bg_card"],
-        foreground=COLORS["fg"],
-        font=COLORS["font_sans"],
-        padding=(0, 4),
-    )
-    style.configure(
-        "Muted.TLabel",
-        background=COLORS["bg"],
-        foreground=COLORS["fg_muted"],
-        font=(COLORS["font_sans"][0], 9),
-    )
-    style.configure(
-        "Start.TButton",
-        background=COLORS["accent_start"],
-        foreground=COLORS["bg"],
-        font=COLORS["font_sans"],
-        padding=(20, 10),
-    )
-    style.map("Start.TButton", background=[("active", "#b9f27c"), ("disabled", COLORS["border"])])
-    style.configure(
-        "Stop.TButton",
-        background=COLORS["accent_stop"],
-        foreground=COLORS["bg"],
-        font=COLORS["font_sans"],
-        padding=(20, 10),
-    )
-    style.map("Stop.TButton", background=[("active", "#ff9db2"), ("disabled", COLORS["border"])])
+def _get_dpi_scale():
+    """Return scale factor for high-DPI displays. Aggressive scaling for laptop readability."""
+    scale = 1.0
+    try:
+        import tkinter as _tk
+        _root = _tk.Tk()
+        _root.withdraw()
+        _root.update_idletasks()
+        dpi = _root.winfo_fpixels("1i")
+        if dpi and dpi > 0:
+            scale = max(1.0, min(2.0, dpi / 96.0))
+        # Windows: Tk often reports 96 on high-DPI; force big scale for laptops
+        if scale <= 1.0 and sys.platform == "win32":
+            h = _root.winfo_screenheight()
+            if h >= 900:
+                scale = 1.85  # big fonts on laptop screens
+        _root.destroy()
+    except Exception:
+        pass
+    return scale
 
 
 def main():
-    root = tk.Tk()
-    root.title("System Audio → Real-time Transcription")
-    root.geometry("720x440")
-    root.minsize(520, 340)
-    root.option_add("*Font", COLORS["font_sans"])
+    # Load Parakeet model before starting the GUI
+    print("Loading Parakeet model (first run may download ~660MB from Hugging Face)...")
+    get_transcription_model()
+    print("Model ready. Opening window...")
 
-    setup_modern_theme(root)
+    # CustomTkinter theme and scaling (before creating window)
+    ctk.set_appearance_mode("dark")
+    ctk.set_default_color_theme("dark-blue")
+    scale = _get_dpi_scale()
+    ctk.set_widget_scaling(scale)
+    ctk.set_window_scaling(scale)
+    # Font sizes: large bases and aggressive scale (min 16, max 36)
+    _fs = lambda base: max(16, min(36, round(base * scale)))
+    F = type("F", (), {"title": _fs(22), "header": _fs(20), "body": _fs(19), "small": _fs(17), "tiny": _fs(16)})()
+
+    root = ctk.CTk()
+    root.title("System Audio → Real-time Transcription")
+    root.geometry("960x480")
+    root.minsize(720, 380)
 
     app = type("App", (), {})()
     app.root = root
@@ -293,82 +354,179 @@ def main():
     app.capture_thread = None
     app.transcription_thread = None
 
+    # Main horizontal layout: sidebar | content
+    content_frame = ctk.CTkFrame(root, fg_color="transparent")
+    content_frame.pack(fill="both", expand=True, padx=8, pady=8)
+
+    # ---- Left sidebar: installed transcription models ----
+    sidebar = ctk.CTkFrame(content_frame, width=260, corner_radius=0, fg_color=("gray85", "gray20"))
+    sidebar.pack(side="left", fill="y", padx=(0, 8))
+    sidebar.pack_propagate(False)
+    ctk.CTkLabel(
+        sidebar,
+        text="Installed models",
+        font=ctk.CTkFont(size=F.title, weight="bold"),
+    ).pack(anchor="w", padx=12, pady=(12, 6))
+    sidebar_scroll = ctk.CTkScrollableFrame(sidebar, fg_color="transparent")
+    sidebar_scroll.pack(fill="both", expand=True)
+
+    def refresh_sidebar_models():
+        for w in sidebar_scroll.winfo_children():
+            w.destroy()
+        models, err = list_installed_transcription_models()
+        if err:
+            ctk.CTkLabel(
+                sidebar_scroll,
+                text=f"Error: {err[:50]}…" if len(err) > 50 else err,
+                font=ctk.CTkFont(size=F.small),
+                text_color=("red", "#f7768e"),
+                wraplength=220,
+            ).pack(anchor="w", padx=8, pady=4)
+            return
+        if not models:
+            ctk.CTkLabel(
+                sidebar_scroll,
+                text="No transcription models in cache.",
+                font=ctk.CTkFont(size=F.small),
+                text_color="gray",
+                wraplength=220,
+            ).pack(anchor="w", padx=8, pady=4)
+            return
+        for m in models:
+            row = ctk.CTkFrame(sidebar_scroll, fg_color="transparent")
+            row.pack(fill="x", pady=4)
+            ctk.CTkLabel(
+                row,
+                text=f"{m['repo_id']}\n{m['size_str']}",
+                font=ctk.CTkFont(size=F.small),
+                wraplength=160,
+                anchor="w",
+            ).pack(side="left", padx=(8, 4))
+            def _uninstall(repo_id=m["repo_id"], hashes=m["revision_hashes"]):
+                if not messagebox.askyesno("Uninstall model", f"Delete cached model '{repo_id}'? This frees disk space; you can re-download later."):
+                    return
+                ok, err = uninstall_transcription_model(repo_id, hashes)
+                if ok:
+                    messagebox.showinfo("Uninstalled", f"Removed {repo_id} from cache.")
+                    refresh_sidebar_models()
+                else:
+                    messagebox.showerror("Error", err or "Failed to delete.")
+            ctk.CTkButton(
+                row,
+                text="Uninstall",
+                width=70,
+                height=24,
+                font=ctk.CTkFont(size=F.tiny),
+                fg_color=("#c94c6c", "#e06c7a"),
+                hover_color=("#a83d58", "#c95a68"),
+                command=_uninstall,
+            ).pack(side="right", padx=(0, 8))
+
+    refresh_sidebar_models()
+    ctk.CTkButton(
+        sidebar,
+        text="Refresh list",
+        font=ctk.CTkFont(size=F.small),
+        fg_color=("gray70", "gray35"),
+        hover_color=("gray60", "gray40"),
+        command=refresh_sidebar_models,
+    ).pack(pady=(4, 12))
+
+    # ---- Right: main content (header + transcript + footer) ----
+    main_content = ctk.CTkFrame(content_frame, fg_color="transparent")
+    main_content.pack(side="left", fill="both", expand=True)
+
     # Header bar
-    header = tk.Frame(root, bg=COLORS["bg_card"], padx=16, pady=12)
-    header.pack(fill=tk.X)
-    app.status_var = tk.StringVar(value="Ready — click Start to begin")
-    status_lbl = tk.Label(
+    header = ctk.CTkFrame(main_content, fg_color=("gray90", "gray20"), corner_radius=0, height=52)
+    header.pack(fill="x", pady=(0, 8))
+    header.pack_propagate(False)
+    app.status_var = ctk.StringVar(value="Ready — click Start to begin")
+    ctk.CTkLabel(
         header,
         textvariable=app.status_var,
-        font=COLORS["font_sans"],
-        fg=COLORS["fg"],
-        bg=COLORS["bg_card"],
-    )
-    status_lbl.pack(side=tk.LEFT)
-    btn_frame = tk.Frame(header, bg=COLORS["bg_card"])
-    btn_frame.pack(side=tk.RIGHT)
-    app.start_btn = tk.Button(
+        font=ctk.CTkFont(size=F.header, weight="bold"),
+    ).pack(side="left", padx=16, pady=12)
+    btn_frame = ctk.CTkFrame(header, fg_color="transparent")
+    btn_frame.pack(side="right", padx=16, pady=8)
+    app.start_btn = ctk.CTkButton(
         btn_frame,
         text="Start",
         command=lambda: start_stop(app),
-        font=COLORS["font_sans"],
-        fg=COLORS["bg"],
-        bg=COLORS["accent_start"],
-        activebackground="#b9f27c",
-        activeforeground=COLORS["bg"],
-        relief=tk.FLAT,
-        padx=20,
-        pady=10,
-        cursor="hand2",
-        borderwidth=0,
+        font=ctk.CTkFont(size=F.header, weight="bold"),
+        width=100,
+        height=36,
+        corner_radius=0,
+        fg_color=("#2e7d32", "#1b5e20"),
+        hover_color=("#388e3c", "#2e7d32"),
     )
-    app.start_btn.pack(side=tk.LEFT, padx=(0, 8))
-    app.stop_btn = tk.Button(
+    app.start_btn.pack(side="left", padx=(0, 8))
+    app.stop_btn = ctk.CTkButton(
         btn_frame,
         text="Stop",
         command=lambda: start_stop(app),
-        state=tk.DISABLED,
-        font=COLORS["font_sans"],
-        fg=COLORS["bg"],
-        bg=COLORS["accent_stop"],
-        activebackground="#ff9db2",
-        activeforeground=COLORS["bg"],
-        relief=tk.FLAT,
-        padx=20,
-        pady=10,
-        cursor="hand2",
-        borderwidth=0,
+        state="disabled",
+        font=ctk.CTkFont(size=F.header, weight="bold"),
+        width=100,
+        height=36,
+        corner_radius=0,
+        fg_color=("#c62828", "#b71c1c"),
+        hover_color=("#d32f2f", "#c62828"),
     )
-    app.stop_btn.pack(side=tk.LEFT)
+    app.stop_btn.pack(side="left")
 
     # Transcript card
-    card = tk.Frame(root, bg=COLORS["bg_card"], padx=0, pady=0)
-    card.pack(fill=tk.BOTH, expand=True, padx=16, pady=(0, 8))
-    tk.Label(
-        card,
+    card = ctk.CTkFrame(main_content, fg_color=("gray90", "gray20"), corner_radius=0)
+    card.pack(fill="both", expand=True, pady=(0, 8))
+    card_header = ctk.CTkFrame(card, fg_color="transparent")
+    card_header.pack(fill="x", padx=16, pady=(12, 4))
+    ctk.CTkLabel(
+        card_header,
         text="Transcript",
-        font=COLORS["font_sans"],
-        fg=COLORS["fg"],
-        bg=COLORS["bg_card"],
-    ).pack(anchor="w", padx=16, pady=(12, 4))
-    transcript_inner = tk.Frame(card, bg=COLORS["bg_card"])
-    transcript_inner.pack(fill=tk.BOTH, expand=True, padx=16, pady=(0, 16))
-    app.log = scrolledtext.ScrolledText(
-        transcript_inner,
-        wrap=tk.WORD,
-        font=COLORS["font_mono"],
-        height=18,
-        bg=COLORS["bg_input"],
-        fg=COLORS["fg"],
-        insertbackground=COLORS["fg"],
-        selectbackground=COLORS["border"],
-        selectforeground=COLORS["fg"],
-        relief=tk.FLAT,
-        padx=12,
-        pady=12,
-        borderwidth=0,
+        font=ctk.CTkFont(size=F.header, weight="bold"),
+    ).pack(side="left")
+    def copy_transcript():
+        text = app.log.get("1.0", "end")
+        text = text.rstrip()
+        if text:
+            root.clipboard_clear()
+            root.clipboard_append(text)
+            root.update()  # keep clipboard content after window loses focus
+    def clear_transcript():
+        app.log.delete("1.0", "end")
+    # Clear on the right
+    ctk.CTkButton(
+        card_header,
+        text="Clear",
+        font=ctk.CTkFont(size=F.small),
+        width=80,
+        height=36,
+        corner_radius=0,
+        fg_color=("gray70", "gray35"),
+        hover_color=("gray60", "gray45"),
+        command=clear_transcript,
+    ).pack(side="right", padx=8, pady=4)
+    # Copy transcript next to the Transcript header (left side)
+    ctk.CTkButton(
+        card_header,
+        text="Copy transcript",
+        font=ctk.CTkFont(size=F.small),
+        width=140,
+        height=36,
+        corner_radius=0,
+        fg_color=("gray70", "gray35"),
+        hover_color=("gray60", "gray45"),
+        command=copy_transcript,
+    ).pack(side="left", padx=(12, 0), pady=4)
+    app.log = ctk.CTkTextbox(
+        card,
+        wrap="word",
+        font=ctk.CTkFont(family="Consolas", size=F.body),
+        corner_radius=0,
+        border_width=0,
+        fg_color=("gray95", "gray15"),
+        border_spacing=12,
     )
-    app.log.pack(fill=tk.BOTH, expand=True)
+    app.log.pack(fill="both", expand=True, padx=16, pady=(0, 16))
 
     # Footer: device info
     devices, _ = list_audio_devices()
@@ -380,14 +538,12 @@ def main():
         dev_info = f"Input: {name}"
     else:
         dev_info = "Input: (default)"
-    footer = tk.Label(
-        root,
+    ctk.CTkLabel(
+        main_content,
         text=dev_info,
-        font=(COLORS["font_sans"][0], 9),
-        fg=COLORS["fg_muted"],
-        bg=COLORS["bg"],
-    )
-    footer.pack(anchor="w", padx=16, pady=(0, 12))
+        font=ctk.CTkFont(size=F.small),
+        text_color="gray",
+    ).pack(anchor="w", padx=16, pady=(0, 12))
 
     root.protocol("WM_DELETE_WINDOW", lambda: (app.stop_event.set(), root.destroy()))
     root.mainloop()

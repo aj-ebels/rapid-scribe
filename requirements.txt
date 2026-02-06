@@ -1,5 +1,7 @@
 # On Ubuntu/WSL2, install PortAudio first: sudo apt-get install libportaudio2 portaudio19-dev
 sounddevice>=0.4.6
 numpy>=1.24.0
-faster-whisper>=1.0.0
 scipy>=1.10.0
+customtkinter>=5.2.0
+# Parakeet via onnx-asr (same approach as Meetily). Use [gpu,hub] for CUDA.
+onnx-asr[cpu,hub]>=0.10.0
