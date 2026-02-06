@@ -1,4 +1,5 @@
-# On Ubuntu/WSL2, install PortAudio first: sudo apt-get install libportaudio2 portaudio19-dev
+# Audio: On Ubuntu/WSL2 install PortAudio first: sudo apt-get install libportaudio2 portaudio19-dev
+# Windows: no extra system install; use Stereo Mix or loopback for system audio.
 sounddevice>=0.4.6
 numpy>=1.24.0
 scipy>=1.10.0

@@ -8,6 +8,7 @@ Same Parakeet/ONNX stack as Meetily: https://github.com/Zackriya-Solutions/meeti
 import os
 import sys
 import json
+import tempfile
 import threading
 import queue
 import uuid
@@ -169,7 +170,8 @@ SAMPLE_RATE = 16000
 CHANNELS = 1
 CHUNK_DURATION_SEC = 5.0
 CHUNK_SAMPLES = int(SAMPLE_RATE * CHUNK_DURATION_SEC)
-CHUNK_PATH = Path("/tmp/chunk.wav")
+# Use OS temp dir so it works on Windows (no /tmp) and Linux/WSL
+CHUNK_PATH = Path(tempfile.gettempdir()) / "meetings_chunk.wav"
 
 # Skip transcribing chunks that are effectively silent (avoids Whisper "hallucinations"
 # where it invents phrases like "Thanks for watching" when there's no real speech).
@@ -187,7 +189,7 @@ def _is_silent(chunk: np.ndarray) -> bool:
 # -----------------------------------------------------------------------------
 
 def capture_worker(device_index, chunk_queue, stop_event):
-    """Record chunks; save to /tmp/chunk.wav only when not silent, put path in queue."""
+    """Record chunks; save to temp chunk file only when not silent, put path in queue."""
     while not stop_event.is_set():
         try:
             chunk = sd.rec(

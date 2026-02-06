@@ -28,6 +28,15 @@ pip install -r requirements.txt
 python main.py
 ```
 
+On **Windows**, after setup you can:
+- Double‑click **`run_from_source.bat`** (Command Prompt), or
+- In PowerShell, run **`.\run_from_source.ps1`** or **`.venv\Scripts\python.exe main.py`** (avoids execution policy).
+
+If **PowerShell** blocks `.venv\Scripts\activate` with "running scripts is disabled", you can do everything without activating:
+- Install deps: **`.venv\Scripts\python.exe -m pip install -r requirements.txt`**
+- Run app: **`.venv\Scripts\python.exe main.py`**
+- Or use **cmd** and `activate.bat` instead.
+
 First run will download the Parakeet model (from Hugging Face); after that it starts quickly. For NVIDIA GPU, use `onnx-asr[gpu,hub]` in `requirements.txt` instead of `onnx-asr[cpu,hub]` (requires CUDA).
 
 ---
