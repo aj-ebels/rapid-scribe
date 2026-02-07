@@ -42,6 +42,7 @@ def load_settings(default_model=None):
         "meeting_mic_device": None,
         "loopback_device_index": None,
         "transcription_model": model,
+        "chunk_duration_sec": 5.0,
     }
     if not SETTINGS_FILE.exists():
         return out
@@ -53,6 +54,8 @@ def load_settings(default_model=None):
             out["meeting_mic_device"] = data.get("meeting_mic_device")
             out["loopback_device_index"] = data.get("loopback_device_index")
             out["transcription_model"] = data.get("transcription_model", model) or model
+            if "chunk_duration_sec" in data and isinstance(data["chunk_duration_sec"], (int, float)):
+                out["chunk_duration_sec"] = max(3.0, min(30.0, float(data["chunk_duration_sec"])))
     except Exception:
         pass
     return out

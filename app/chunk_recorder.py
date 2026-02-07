@@ -1,6 +1,7 @@
 """
 Sliding-window recorder: accumulates stereo audio (L=mic, R=loopback) into fixed-duration
 chunks, saves each as a mono WAV at ASR sample rate (16 kHz), then invokes callback with path.
+The remainder after each chunk is kept in the buffer so no audio is dropped at boundaries.
 """
 
 import os
@@ -53,9 +54,15 @@ class ChunkRecorder:
         if self._buffer_frames == 0:
             return
         concatenated = np.concatenate(self._buffer, axis=0)
-        self._buffer.clear()
-        self._buffer_frames = 0
         to_write = concatenated[: self.chunk_frames]
+        # Keep remainder in buffer (sliding window) so we never drop audio at chunk boundaries.
+        remainder = concatenated[self.chunk_frames:]
+        if len(remainder) > 0:
+            self._buffer = [remainder]
+            self._buffer_frames = len(remainder)
+        else:
+            self._buffer.clear()
+            self._buffer_frames = 0
         if len(to_write) < self.chunk_frames:
             pad = np.zeros((self.chunk_frames - len(to_write), 2), dtype=np.float32)
             to_write = np.concatenate([to_write, pad], axis=0)
@@ -76,6 +83,11 @@ class ChunkRecorder:
             import logging
             logging.getLogger(__name__).exception("Failed to write chunk WAV %s: %s", wav_path, e)
             return
+        try:
+            from diagnostic import write as diag
+            diag("chunk_flushed", path=wav_path, written_frames=len(to_write), remainder_frames=len(remainder))
+        except ImportError:
+            pass
         cb = self.on_chunk_ready
         if cb is not None:
             try:

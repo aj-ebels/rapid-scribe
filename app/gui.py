@@ -182,9 +182,12 @@ def start_stop(app):
             app.log.see("end")
             return
         try:
+            chunk_sec = app.settings.get("chunk_duration_sec")
+            if not isinstance(chunk_sec, (int, float)) or chunk_sec < 3 or chunk_sec > 30:
+                chunk_sec = CHUNK_DURATION_SEC
             app.recorder = ChunkRecorder(
                 sample_rate=CAPTURE_SAMPLE_RATE_MEETING,
-                chunk_duration_sec=CHUNK_DURATION_SEC,
+                chunk_duration_sec=float(chunk_sec),
                 asr_sample_rate=SAMPLE_RATE,
                 on_chunk_ready=lambda wav_path: meeting_chunk_ready(app, wav_path),
             )
