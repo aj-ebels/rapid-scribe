@@ -1,11 +1,29 @@
 """
 App settings: JSON file path, audio mode constants, load/save.
+When frozen (built app), use per-user app data so settings are writable (e.g. from Program Files).
 """
 import json
+import os
+import sys
 from pathlib import Path
 
 _BASE = Path(__file__).resolve().parent
-SETTINGS_FILE = _BASE / "settings.json"
+
+
+def _get_settings_path():
+    """Path to settings.json; use app data when running as built exe so writes always succeed."""
+    if getattr(sys, "frozen", False):
+        if os.name == "nt":
+            base = os.environ.get("APPDATA", str(Path.home() / "AppData" / "Roaming"))
+        elif sys.platform == "darwin":
+            base = str(Path.home() / "Library" / "Application Support")
+        else:
+            base = os.environ.get("XDG_CONFIG_HOME", str(Path.home() / ".config"))
+        return Path(base) / "Meetings" / "settings.json"
+    return _BASE / "settings.json"
+
+
+SETTINGS_FILE = _get_settings_path()
 
 # Default transcription model (Hugging Face repo id)
 DEFAULT_TRANSCRIPTION_MODEL = "istupakov/parakeet-tdt-0.6b-v2-onnx"
@@ -42,6 +60,7 @@ def load_settings(default_model=None):
 def save_settings(settings):
     """Write settings to JSON."""
     try:
+        SETTINGS_FILE.parent.mkdir(parents=True, exist_ok=True)
         with open(SETTINGS_FILE, "w", encoding="utf-8") as f:
             json.dump(settings, f, indent=2)
     except Exception:
