@@ -6,9 +6,9 @@ from pathlib import Path
 
 from settings import DEFAULT_TRANSCRIPTION_MODEL
 
+# Single default: used for dropdown default and for "Install model" (recommended model).
 PARAKEET_MODEL = DEFAULT_TRANSCRIPTION_MODEL
-# Recommended model for new users (Hugging Face); same as used by onnx-asr Parakeet stack.
-STANDARD_TRANSCRIPTION_MODEL = "istupakov/parakeet-tdt-0.6b-v2-onnx"
+STANDARD_TRANSCRIPTION_MODEL = DEFAULT_TRANSCRIPTION_MODEL
 _parakeet_model = None
 _parakeet_model_id = None
 

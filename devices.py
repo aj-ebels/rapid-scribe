@@ -82,6 +82,7 @@ def get_effective_audio_device(app):
     mode = settings.get("audio_mode") or AUDIO_MODE_DEFAULT
     if mode == AUDIO_MODE_LOOPBACK:
         return (AUDIO_MODE_LOOPBACK, None, settings.get("loopback_device_index"))
+    # "meeting_ffmpeg" = legacy setting value; treat as in-process Meeting
     if mode == AUDIO_MODE_MEETING or mode == "meeting_ffmpeg":
         return (AUDIO_MODE_MEETING, settings.get("meeting_mic_device"), settings.get("loopback_device_index"))
     return (AUDIO_MODE_DEFAULT, None, None)
