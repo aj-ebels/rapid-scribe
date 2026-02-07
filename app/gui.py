@@ -409,8 +409,8 @@ def main():
     install_card = ctk.CTkFrame(models_card, fg_color=COLORS["card"], corner_radius=UI_RADIUS, border_width=1)
     install_card.pack(fill="x", padx=UI_PAD_LG, pady=(UI_PAD, UI_PAD_LG))
     ctk.CTkLabel(install_card, text="Step 1: Install the transcription model (required before first recording)", font=ctk.CTkFont(family=UI_FONT_FAMILY, size=F.header, weight="bold")).pack(anchor="w", padx=UI_PAD_LG, pady=(UI_PAD, 4))
-    ctk.CTkLabel(install_card, text="Recording and live transcription require a speech-to-text model. Download the recommended model below once; after that you can start recording from the main screen. Size: about 250 MB.", font=ctk.CTkFont(family=UI_FONT_FAMILY, size=F.small), text_color="gray", wraplength=600).pack(anchor="w", padx=UI_PAD_LG, pady=(0, 4))
-    ctk.CTkLabel(install_card, text=f"Model: {STANDARD_TRANSCRIPTION_MODEL}", font=ctk.CTkFont(family=UI_FONT_FAMILY, size=F.tiny), text_color="gray", wraplength=600).pack(anchor="w", padx=UI_PAD_LG, pady=(0, UI_PAD))
+    ctk.CTkLabel(install_card, text="Recording and live transcription require a speech-to-text model. Download the recommended model below once; after that you can start recording from the main screen. Size: about 250 MB.", font=ctk.CTkFont(family=UI_FONT_FAMILY, size=F.small), text_color="gray", wraplength=600, anchor="w").pack(anchor="w", padx=UI_PAD_LG, pady=(0, 4))
+    ctk.CTkLabel(install_card, text=f"Model: {STANDARD_TRANSCRIPTION_MODEL}", font=ctk.CTkFont(family=UI_FONT_FAMILY, size=F.tiny), text_color="gray", wraplength=600, anchor="w").pack(anchor="w", padx=UI_PAD_LG, pady=(0, UI_PAD))
     install_row = ctk.CTkFrame(install_card, fg_color="transparent")
     install_row.pack(fill="x", padx=UI_PAD_LG, pady=(0, UI_PAD))
     app.install_model_status_var = ctk.StringVar(value="")
@@ -523,10 +523,10 @@ def main():
                     app.install_model_status_var.set("")
         update_model_status(app)
         if err:
-            ctk.CTkLabel(models_scroll, text=f"Error: {err[:50]}…" if len(err) > 50 else err, font=ctk.CTkFont(family=UI_FONT_FAMILY, size=F.small), text_color=COLORS["error_text"], wraplength=400).pack(anchor="w", padx=UI_PAD, pady=4)
+            ctk.CTkLabel(models_scroll, text=f"Error: {err[:50]}…" if len(err) > 50 else err, font=ctk.CTkFont(family=UI_FONT_FAMILY, size=F.small), text_color=COLORS["error_text"], wraplength=400, anchor="w").pack(anchor="w", padx=UI_PAD, pady=4)
             return
         if not models:
-            ctk.CTkLabel(models_scroll, text="No transcription models in cache.", font=ctk.CTkFont(family=UI_FONT_FAMILY, size=F.small), text_color="gray", wraplength=400).pack(anchor="w", padx=UI_PAD, pady=4)
+            ctk.CTkLabel(models_scroll, text="No transcription models in cache.", font=ctk.CTkFont(family=UI_FONT_FAMILY, size=F.small), text_color="gray", wraplength=400, anchor="w").pack(anchor="w", padx=UI_PAD, pady=4)
             return
         for m in models:
             row = ctk.CTkFrame(models_scroll, fg_color="transparent")
@@ -675,7 +675,9 @@ def main():
     ctk.CTkButton(export_row, text="Export", font=ctk.CTkFont(family=UI_FONT_FAMILY, size=F.small), width=80, height=28, corner_radius=UI_RADIUS, fg_color=COLORS["secondary_fg"], hover_color=COLORS["secondary_hover"], command=_export_markdown).pack(side="left", padx=(0, 0), pady=4)
 
     # AI Prompts tab
-    ctk.CTkLabel(tab_prompts, text=f"Custom prompt templates for AI Summary. Use {TRANSCRIPT_PLACEHOLDER} where the transcript should be inserted.", font=ctk.CTkFont(family=UI_FONT_FAMILY, size=F.small), text_color="gray", wraplength=1000).pack(anchor="w", padx=UI_PAD_LG, pady=(UI_PAD, 4))
+    prompts_header = ctk.CTkFrame(tab_prompts, fg_color="transparent")
+    prompts_header.pack(fill="x", padx=UI_PAD_LG, pady=(UI_PAD, 4))
+    ctk.CTkLabel(prompts_header, text=f"Custom prompt templates for AI Summary. Use {TRANSCRIPT_PLACEHOLDER} where the transcript should be inserted.", font=ctk.CTkFont(family=UI_FONT_FAMILY, size=F.small), text_color="gray", wraplength=1000, anchor="w").pack(anchor="w", side="left", fill="x", expand=True, padx=(0, UI_PAD))
     prompts_scroll = ctk.CTkScrollableFrame(tab_prompts, fg_color="transparent")
     prompts_scroll.pack(fill="both", expand=True, padx=UI_PAD_LG, pady=UI_PAD)
 
@@ -704,8 +706,8 @@ def main():
     def add_new_prompt():
         _open_edit_prompt_dialog(root, None, refresh_prompts_list, UI_PAD, UI_RADIUS, UI_FONT_FAMILY, F, COLORS)
 
+    ctk.CTkButton(prompts_header, text="Add prompt", font=ctk.CTkFont(family=UI_FONT_FAMILY, size=F.small), corner_radius=UI_RADIUS, fg_color=COLORS["primary_fg"], hover_color=COLORS["primary_hover"], command=add_new_prompt).pack(side="right")
     refresh_prompts_list()
-    ctk.CTkButton(tab_prompts, text="Add prompt", font=ctk.CTkFont(family=UI_FONT_FAMILY, size=F.small), corner_radius=UI_RADIUS, fg_color=COLORS["primary_fg"], hover_color=COLORS["primary_hover"], command=add_new_prompt).pack(anchor="w", padx=UI_PAD_LG, pady=(4, UI_PAD))
 
     # Settings tab
     settings_card = ctk.CTkFrame(tab_settings, fg_color="transparent")
@@ -713,7 +715,7 @@ def main():
 
     # OpenAI API key (stored securely in user app data)
     ctk.CTkLabel(settings_card, text="OpenAI API key", font=ctk.CTkFont(family=UI_FONT_FAMILY, size=F.header, weight="bold")).pack(anchor="w", pady=(0, 4))
-    ctk.CTkLabel(settings_card, text="Required for AI Summary. Stored on this device only.", font=ctk.CTkFont(family=UI_FONT_FAMILY, size=F.small), text_color="gray", wraplength=520).pack(anchor="w", pady=(0, 6))
+    ctk.CTkLabel(settings_card, text="Required for AI Summary. Stored on this device only.", font=ctk.CTkFont(family=UI_FONT_FAMILY, size=F.small), text_color="gray", wraplength=520, anchor="w").pack(anchor="w", pady=(0, 6))
     api_key_row = ctk.CTkFrame(settings_card, fg_color="transparent")
     api_key_row.pack(fill="x", pady=(0, UI_PAD_LG))
     app.openai_key_entry = ctk.CTkEntry(api_key_row, width=400, height=32, font=ctk.CTkFont(family=UI_FONT_FAMILY, size=F.small), show="•", placeholder_text="Enter key to save, or leave blank to keep existing")
@@ -738,11 +740,11 @@ def main():
     ctk.CTkButton(api_key_row, text="Save key", font=ctk.CTkFont(family=UI_FONT_FAMILY, size=F.small), width=100, height=32, corner_radius=UI_RADIUS, fg_color=COLORS["primary_fg"], hover_color=COLORS["primary_hover"], command=_save_openai_key).pack(side="left")
     ctk.CTkButton(api_key_row, text="Clear key", font=ctk.CTkFont(family=UI_FONT_FAMILY, size=F.small), width=100, height=32, corner_radius=UI_RADIUS, fg_color=COLORS["secondary_fg"], hover_color=COLORS["secondary_hover"], command=_clear_openai_key).pack(side="left", padx=(UI_PAD, 0))
     status_text = "A key is already saved. Enter a new key and click Save key to replace it." if get_openai_api_key() else "No key saved yet. Get an API key from platform.openai.com and paste it above."
-    app.openai_key_status_label = ctk.CTkLabel(settings_card, text=status_text, font=ctk.CTkFont(family=UI_FONT_FAMILY, size=F.tiny), text_color="gray", wraplength=520)
+    app.openai_key_status_label = ctk.CTkLabel(settings_card, text=status_text, font=ctk.CTkFont(family=UI_FONT_FAMILY, size=F.tiny), text_color="gray", wraplength=520, anchor="w")
     app.openai_key_status_label.pack(anchor="w", pady=(0, UI_PAD_LG))
 
     ctk.CTkLabel(settings_card, text="Capture mode", font=ctk.CTkFont(family=UI_FONT_FAMILY, size=F.header, weight="bold")).pack(anchor="w", pady=(0, 4))
-    ctk.CTkLabel(settings_card, text="Meeting = in-process mic + loopback (PyAudioWPatch; loopback read only when data available). Loopback device below applies to Meeting mode.", font=ctk.CTkFont(family=UI_FONT_FAMILY, size=F.small), text_color="gray", wraplength=520).pack(anchor="w", pady=(0, UI_PAD))
+    ctk.CTkLabel(settings_card, text="Meeting = in-process mic + loopback (PyAudioWPatch; loopback read only when data available). Loopback device below applies to Meeting mode.", font=ctk.CTkFont(family=UI_FONT_FAMILY, size=F.small), text_color="gray", wraplength=520, anchor="w").pack(anchor="w", pady=(0, UI_PAD))
     mode_values = ["Default input", "Loopback (system audio)", "Meeting (mic + loopback)"]
     mode_to_val = {AUDIO_MODE_DEFAULT: mode_values[0], AUDIO_MODE_LOOPBACK: mode_values[1], AUDIO_MODE_MEETING: mode_values[2]}
     val_to_mode = {v: k for k, v in mode_to_val.items()}
