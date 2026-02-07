@@ -130,16 +130,30 @@ from tkinter import messagebox, filedialog
 # Model: nemo-parakeet-tdt-0.6b-v2 (en) or nemo-parakeet-tdt-0.6b-v3 (multilingual)
 PARAKEET_MODEL = "nemo-parakeet-tdt-0.6b-v2"
 _parakeet_model = None
+_parakeet_model_id = None
 
-def get_transcription_model():
-    global _parakeet_model
-    if _parakeet_model is None:
+def get_transcription_model(model_id=None):
+    """Load and return the ONNX ASR model. model_id defaults to PARAKEET_MODEL. Cached per model_id."""
+    global _parakeet_model, _parakeet_model_id
+    model_id = model_id or PARAKEET_MODEL
+    if _parakeet_model is None or _parakeet_model_id != model_id:
+        if _parakeet_model is not None:
+            _parakeet_model = None
+            _parakeet_model_id = None
         import onnx_asr
         _parakeet_model = onnx_asr.load_model(
-            PARAKEET_MODEL,
+            model_id,
             quantization="int8",  # faster on CPU, similar to previous Whisper int8
         )
+        _parakeet_model_id = model_id
     return _parakeet_model
+
+
+def clear_transcription_model_cache():
+    """Clear the cached model so the next transcription uses the currently selected model."""
+    global _parakeet_model, _parakeet_model_id
+    _parakeet_model = None
+    _parakeet_model_id = None
 
 
 # -----------------------------------------------------------------------------
@@ -221,9 +235,9 @@ AUDIO_MODE_MEETING = "meeting"
 
 
 def load_settings():
-    """Load settings from JSON. Returns dict with audio_mode, meeting_mic_device, loopback_device_index."""
+    """Load settings from JSON. Returns dict with audio_mode, meeting_mic_device, loopback_device_index, transcription_model."""
     out = {"audio_mode": AUDIO_MODE_DEFAULT, "meeting_mic_device": None, "loopback_device_index": None,
-           "ffmpeg_mic_name": None, "ffmpeg_loopback_name": None}
+           "ffmpeg_mic_name": None, "ffmpeg_loopback_name": None, "transcription_model": PARAKEET_MODEL}
     if not SETTINGS_FILE.exists():
         return out
     try:
@@ -235,6 +249,7 @@ def load_settings():
             out["loopback_device_index"] = data.get("loopback_device_index")
             out["ffmpeg_mic_name"] = data.get("ffmpeg_mic_name")
             out["ffmpeg_loopback_name"] = data.get("ffmpeg_loopback_name")
+            out["transcription_model"] = data.get("transcription_model", PARAKEET_MODEL) or PARAKEET_MODEL
     except Exception:
         pass
     return out
@@ -753,9 +768,9 @@ def capture_worker_ffmpeg_meeting(mic_dshow_name, loopback_dshow_name, chunk_que
 # Transcription thread
 # -----------------------------------------------------------------------------
 
-def transcription_worker(chunk_queue, text_queue, stop_event):
-    """Take WAV paths from chunk_queue, transcribe with Parakeet, push text to text_queue, delete file."""
-    model = get_transcription_model()
+def transcription_worker(chunk_queue, text_queue, stop_event, model_id=None):
+    """Take WAV paths from chunk_queue, transcribe with selected model, push text to text_queue, delete file."""
+    model = get_transcription_model(model_id or PARAKEET_MODEL)
     while not stop_event.is_set():
         try:
             item = chunk_queue.get(timeout=0.5)
@@ -1026,9 +1041,10 @@ def start_stop(app):
 
     if app.capture_thread:
         app.capture_thread.start()
+    model_id = app.settings.get("transcription_model") or PARAKEET_MODEL
     app.transcription_thread = threading.Thread(
         target=transcription_worker,
-        args=(app.chunk_queue, app.text_queue, app.stop_event),
+        args=(app.chunk_queue, app.text_queue, app.stop_event, model_id),
         daemon=True,
     )
     app.transcription_thread.start()
@@ -1148,9 +1164,10 @@ def _get_dpi_scale():
 
 
 def main():
-    # Load Parakeet model before starting the GUI
-    print("Loading Parakeet model (first run may download ~660MB from Hugging Face)...")
-    get_transcription_model()
+    # Load transcription model before starting the GUI (uses saved preference if set)
+    _saved_model = load_settings().get("transcription_model") or PARAKEET_MODEL
+    print(f"Loading transcription model '{_saved_model}' (first run may download from Hugging Face)...")
+    get_transcription_model(_saved_model)
     print("Model ready. Opening window...")
 
     # CustomTkinter theme and scaling (before creating window)
@@ -1175,8 +1192,8 @@ def main():
         "sidebar": ("gray88", "gray18"),
         "card": ("gray92", "gray18"),
         "header": ("gray92", "gray18"),
-        "primary_fg": ("#2e7d32", "#1b5e20"),
-        "primary_hover": ("#388e3c", "#2e7d32"),
+        "primary_fg": ("#3B76FB", "#3B76FB"),
+        "primary_hover": ("#2d65e8", "#2d65e8"),
         "danger_fg": ("#c62828", "#b71c1c"),
         "danger_hover": ("#d32f2f", "#c62828"),
         "secondary_fg": ("gray70", "gray35"),
@@ -1219,89 +1236,12 @@ def main():
     app.capture_threads = []
     app.settings = load_settings()
 
-    # Main horizontal layout: sidebar | content
+    # Main layout: content only (no sidebar)
     content_frame = ctk.CTkFrame(root, fg_color="transparent")
     content_frame.pack(fill="both", expand=True, padx=UI_PAD, pady=UI_PAD)
 
-    # ---- Left sidebar: installed transcription models ----
-    sidebar = ctk.CTkFrame(content_frame, width=260, corner_radius=UI_RADIUS, fg_color=COLORS["sidebar"])
-    sidebar.pack(side="left", fill="y", padx=(0, UI_PAD))
-    sidebar.pack_propagate(False)
-    ctk.CTkLabel(
-        sidebar,
-        text="Installed models",
-        font=ctk.CTkFont(family=UI_FONT_FAMILY, size=F.title, weight="bold"),
-    ).pack(anchor="w", padx=UI_PAD, pady=(UI_PAD, 6))
-    sidebar_scroll = ctk.CTkScrollableFrame(sidebar, fg_color="transparent")
-    sidebar_scroll.pack(fill="both", expand=True)
-
-    def refresh_sidebar_models():
-        for w in sidebar_scroll.winfo_children():
-            w.destroy()
-        models, err = list_installed_transcription_models()
-        if err:
-            ctk.CTkLabel(
-                sidebar_scroll,
-                text=f"Error: {err[:50]}…" if len(err) > 50 else err,
-                font=ctk.CTkFont(family=UI_FONT_FAMILY, size=F.small),
-                text_color=COLORS["error_text"],
-                wraplength=220,
-            ).pack(anchor="w", padx=UI_PAD, pady=4)
-            return
-        if not models:
-            ctk.CTkLabel(
-                sidebar_scroll,
-                text="No transcription models in cache.",
-                font=ctk.CTkFont(family=UI_FONT_FAMILY, size=F.small),
-                text_color="gray",
-                wraplength=220,
-            ).pack(anchor="w", padx=UI_PAD, pady=4)
-            return
-        for m in models:
-            row = ctk.CTkFrame(sidebar_scroll, fg_color="transparent")
-            row.pack(fill="x", pady=4)
-            ctk.CTkLabel(
-                row,
-                text=f"{m['repo_id']}\n{m['size_str']}",
-                font=ctk.CTkFont(family=UI_FONT_FAMILY, size=F.small),
-                wraplength=160,
-                anchor="w",
-            ).pack(side="left", padx=(UI_PAD, 4))
-            def _uninstall(repo_id=m["repo_id"], hashes=m["revision_hashes"]):
-                if not messagebox.askyesno("Uninstall model", f"Delete cached model '{repo_id}'? This frees disk space; you can re-download later."):
-                    return
-                ok, err = uninstall_transcription_model(repo_id, hashes)
-                if ok:
-                    messagebox.showinfo("Uninstalled", f"Removed {repo_id} from cache.")
-                    refresh_sidebar_models()
-                else:
-                    messagebox.showerror("Error", err or "Failed to delete.")
-            ctk.CTkButton(
-                row,
-                text="Uninstall",
-                width=70,
-                height=28,
-                font=ctk.CTkFont(family=UI_FONT_FAMILY, size=F.tiny),
-                corner_radius=UI_RADIUS,
-                fg_color=COLORS["danger_fg"],
-                hover_color=COLORS["danger_hover"],
-                command=_uninstall,
-            ).pack(side="right", padx=(0, UI_PAD))
-
-    refresh_sidebar_models()
-    ctk.CTkButton(
-        sidebar,
-        text="Refresh list",
-        font=ctk.CTkFont(family=UI_FONT_FAMILY, size=F.small),
-        corner_radius=UI_RADIUS,
-        fg_color=COLORS["secondary_fg"],
-        hover_color=COLORS["secondary_hover"],
-        command=refresh_sidebar_models,
-    ).pack(pady=(4, UI_PAD))
-
-    # ---- Right: main content (header + tabview + footer) ----
     main_content = ctk.CTkFrame(content_frame, fg_color="transparent")
-    main_content.pack(side="left", fill="both", expand=True)
+    main_content.pack(fill="both", expand=True)
 
     # Header bar
     header = ctk.CTkFrame(main_content, fg_color=COLORS["header"], corner_radius=UI_RADIUS, height=52)
@@ -1341,18 +1281,136 @@ def main():
     )
     app.stop_btn.pack(side="left")
 
-    # Tabview: Transcript | AI Prompts | Settings
+    # Tabview: Transcript | AI Prompts | Settings | Models
     tabview = ctk.CTkTabview(main_content, fg_color=COLORS["card"], corner_radius=UI_RADIUS)
     tabview.pack(fill="both", expand=True, pady=(0, UI_PAD))
     tab_transcript = tabview.add("Transcript")
     tab_prompts = tabview.add("AI Prompts")
     tab_settings = tabview.add("Settings")
+    tab_models = tabview.add("Models")
 
-    # ---- Transcript tab ----
+    # ---- Models tab: select model for transcription + installed models list ----
+    models_card = ctk.CTkFrame(tab_models, fg_color="transparent")
+    models_card.pack(fill="both", expand=True)
+    ctk.CTkLabel(
+        models_card,
+        text="Installed models",
+        font=ctk.CTkFont(family=UI_FONT_FAMILY, size=F.title, weight="bold"),
+    ).pack(anchor="w", padx=UI_PAD_LG, pady=(UI_PAD, 6))
+    # Row: Transcription model selector
+    model_selector_row = ctk.CTkFrame(models_card, fg_color="transparent")
+    model_selector_row.pack(fill="x", padx=UI_PAD_LG, pady=(0, UI_PAD))
+    ctk.CTkLabel(
+        model_selector_row,
+        text="Transcription model:",
+        font=ctk.CTkFont(family=UI_FONT_FAMILY, size=F.small),
+    ).pack(side="left", padx=(0, UI_PAD))
+    app.model_selector_var = ctk.StringVar(value=app.settings.get("transcription_model") or PARAKEET_MODEL)
+
+    def on_model_selected(choice):
+        app.settings["transcription_model"] = choice
+        save_settings(app.settings)
+        clear_transcription_model_cache()
+
+    app.model_selector = ctk.CTkOptionMenu(
+        model_selector_row,
+        variable=app.model_selector_var,
+        values=[],  # populated in refresh_models_tab
+        font=ctk.CTkFont(family=UI_FONT_FAMILY, size=F.small),
+        width=320,
+        command=on_model_selected,
+    )
+    app.model_selector.pack(side="left")
+    models_scroll = ctk.CTkScrollableFrame(models_card, fg_color="transparent")
+    models_scroll.pack(fill="both", expand=True)
+
+    def refresh_models_tab():
+        for w in models_scroll.winfo_children():
+            w.destroy()
+        models, err = list_installed_transcription_models()
+        # Update transcription model dropdown
+        repo_ids = [m["repo_id"] for m in models] if models else []
+        current = app.settings.get("transcription_model") or PARAKEET_MODEL
+        if current not in repo_ids and repo_ids:
+            repo_ids.insert(0, current)  # show saved model even if not in cache (e.g. not yet downloaded)
+        elif not repo_ids:
+            repo_ids = [current] if current else [PARAKEET_MODEL]
+        app.model_selector.configure(values=repo_ids)
+        chosen = current if current in repo_ids else (repo_ids[0] if repo_ids else PARAKEET_MODEL)
+        app.model_selector_var.set(chosen)
+        if chosen != current:
+            app.settings["transcription_model"] = chosen
+            save_settings(app.settings)
+            clear_transcription_model_cache()
+        if err:
+            ctk.CTkLabel(
+                models_scroll,
+                text=f"Error: {err[:50]}…" if len(err) > 50 else err,
+                font=ctk.CTkFont(family=UI_FONT_FAMILY, size=F.small),
+                text_color=COLORS["error_text"],
+                wraplength=400,
+            ).pack(anchor="w", padx=UI_PAD, pady=4)
+            return
+        if not models:
+            ctk.CTkLabel(
+                models_scroll,
+                text="No transcription models in cache.",
+                font=ctk.CTkFont(family=UI_FONT_FAMILY, size=F.small),
+                text_color="gray",
+                wraplength=400,
+            ).pack(anchor="w", padx=UI_PAD, pady=4)
+            return
+        for m in models:
+            row = ctk.CTkFrame(models_scroll, fg_color="transparent")
+            row.pack(fill="x", pady=4)
+            ctk.CTkLabel(
+                row,
+                text=f"{m['repo_id']}\n{m['size_str']}",
+                font=ctk.CTkFont(family=UI_FONT_FAMILY, size=F.small),
+                wraplength=400,
+                anchor="w",
+            ).pack(side="left", padx=(UI_PAD, 4))
+            def _uninstall(repo_id=m["repo_id"], hashes=m["revision_hashes"]):
+                if not messagebox.askyesno("Uninstall model", f"Delete cached model '{repo_id}'? This frees disk space; you can re-download later."):
+                    return
+                ok, err = uninstall_transcription_model(repo_id, hashes)
+                if ok:
+                    messagebox.showinfo("Uninstalled", f"Removed {repo_id} from cache.")
+                    refresh_models_tab()
+                else:
+                    messagebox.showerror("Error", err or "Failed to delete.")
+            ctk.CTkButton(
+                row,
+                text="Uninstall",
+                width=70,
+                height=28,
+                font=ctk.CTkFont(family=UI_FONT_FAMILY, size=F.tiny),
+                corner_radius=UI_RADIUS,
+                fg_color=COLORS["danger_fg"],
+                hover_color=COLORS["danger_hover"],
+                command=_uninstall,
+            ).pack(side="right", padx=(0, UI_PAD))
+
+    refresh_models_tab()
+    ctk.CTkButton(
+        models_card,
+        text="Refresh list",
+        font=ctk.CTkFont(family=UI_FONT_FAMILY, size=F.small),
+        corner_radius=UI_RADIUS,
+        fg_color=COLORS["secondary_fg"],
+        hover_color=COLORS["secondary_hover"],
+        command=refresh_models_tab,
+    ).pack(pady=(4, UI_PAD))
+
+    # ---- Transcript tab: Transcript (left) | Summary (right) ----
     card = ctk.CTkFrame(tab_transcript, fg_color="transparent")
     card.pack(fill="both", expand=True)
-    card_header = ctk.CTkFrame(card, fg_color="transparent")
-    card_header.pack(fill="x", padx=UI_PAD_LG, pady=(UI_PAD, 4))
+
+    # Left panel: Transcript
+    transcript_panel = ctk.CTkFrame(card, fg_color="transparent")
+    transcript_panel.pack(side="left", fill="both", expand=True, padx=(UI_PAD_LG, UI_PAD))
+    card_header = ctk.CTkFrame(transcript_panel, fg_color="transparent")
+    card_header.pack(fill="x", pady=(0, 4))
     ctk.CTkLabel(
         card_header,
         text="Transcript",
@@ -1390,7 +1448,7 @@ def main():
         command=clear_transcript,
     ).pack(side="right", padx=UI_PAD, pady=4)
     app.log = ctk.CTkTextbox(
-        card,
+        transcript_panel,
         wrap="word",
         font=ctk.CTkFont(family=MONO_FONT_FAMILY, size=F.body),
         corner_radius=8,
@@ -1398,11 +1456,13 @@ def main():
         fg_color=COLORS["textbox_bg"],
         border_spacing=UI_PAD,
     )
-    app.log.pack(fill="both", expand=True, padx=UI_PAD_LG, pady=(0, UI_PAD))
+    app.log.pack(fill="both", expand=True, pady=(0, UI_PAD))
 
-    # AI Summary section: header with prompt selector and Generate button
-    summary_header = ctk.CTkFrame(card, fg_color="transparent")
-    summary_header.pack(fill="x", padx=UI_PAD_LG, pady=(UI_PAD, 4))
+    # Right panel: AI Summary
+    summary_panel = ctk.CTkFrame(card, fg_color="transparent")
+    summary_panel.pack(side="left", fill="both", expand=True, padx=(UI_PAD, UI_PAD_LG))
+    summary_header = ctk.CTkFrame(summary_panel, fg_color="transparent")
+    summary_header.pack(fill="x", pady=(0, 4))
     ctk.CTkLabel(
         summary_header,
         text="AI Summary",
@@ -1490,33 +1550,6 @@ def main():
         command=_do_ai_summary,
     )
     app.summary_generate_btn.pack(side="left", padx=(UI_PAD, 0), pady=4)
-    ctk.CTkButton(
-        summary_header,
-        text="Refresh list",
-        font=ctk.CTkFont(family=UI_FONT_FAMILY, size=F.tiny),
-        width=80,
-        height=28,
-        corner_radius=UI_RADIUS,
-        fg_color=COLORS["secondary_fg"],
-        hover_color=COLORS["secondary_hover"],
-        command=_refresh_summary_prompt_menu,
-    ).pack(side="left", padx=(UI_PAD, 0), pady=4)
-    # Export: naming field + Export button (saves summary + transcript as markdown)
-    ctk.CTkLabel(
-        summary_header,
-        text="Export:",
-        font=ctk.CTkFont(family=UI_FONT_FAMILY, size=F.small),
-    ).pack(side="left", padx=(UI_PAD_LG, 4), pady=4)
-    app.export_name_var = ctk.StringVar(value="")
-    app.export_name_entry = ctk.CTkEntry(
-        summary_header,
-        textvariable=app.export_name_var,
-        width=160,
-        height=28,
-        placeholder_text="e.g. meeting-notes",
-        font=ctk.CTkFont(family=UI_FONT_FAMILY, size=F.small),
-    )
-    app.export_name_entry.pack(side="left", padx=4, pady=4)
 
     def _export_markdown():
         summary = app.summary_text.get("1.0", "end").strip()
@@ -1553,8 +1586,37 @@ def main():
         except Exception as e:
             messagebox.showerror("Export failed", str(e), parent=root)
 
+    app.summary_text = ctk.CTkTextbox(
+        summary_panel,
+        wrap="word",
+        font=ctk.CTkFont(family=MONO_FONT_FAMILY, size=F.body),
+        corner_radius=8,
+        border_width=0,
+        fg_color=COLORS["textbox_bg"],
+        border_spacing=UI_PAD,
+    )
+    app.summary_text.pack(fill="both", expand=True, pady=(0, UI_PAD))
+
+    # Full-width row below Transcript and Summary: Export
+    export_row = ctk.CTkFrame(tab_transcript, fg_color="transparent")
+    export_row.pack(fill="x", pady=(UI_PAD, UI_PAD_LG), padx=UI_PAD_LG)
+    ctk.CTkLabel(
+        export_row,
+        text="Export:",
+        font=ctk.CTkFont(family=UI_FONT_FAMILY, size=F.small),
+    ).pack(side="left", padx=(UI_PAD, 4), pady=4)
+    app.export_name_var = ctk.StringVar(value="")
+    app.export_name_entry = ctk.CTkEntry(
+        export_row,
+        textvariable=app.export_name_var,
+        width=160,
+        height=28,
+        placeholder_text="e.g. meeting-notes",
+        font=ctk.CTkFont(family=UI_FONT_FAMILY, size=F.small),
+    )
+    app.export_name_entry.pack(side="left", padx=4, pady=4)
     ctk.CTkButton(
-        summary_header,
+        export_row,
         text="Export",
         font=ctk.CTkFont(family=UI_FONT_FAMILY, size=F.small),
         width=80,
@@ -1563,18 +1625,7 @@ def main():
         fg_color=COLORS["secondary_fg"],
         hover_color=COLORS["secondary_hover"],
         command=_export_markdown,
-    ).pack(side="left", padx=(UI_PAD, 0), pady=4)
-
-    app.summary_text = ctk.CTkTextbox(
-        card,
-        wrap="word",
-        font=ctk.CTkFont(family=MONO_FONT_FAMILY, size=F.body),
-        corner_radius=8,
-        border_width=0,
-        fg_color=COLORS["textbox_bg"],
-        border_spacing=UI_PAD,
-    )
-    app.summary_text.pack(fill="both", expand=True, padx=UI_PAD_LG, pady=(0, UI_PAD_LG))
+    ).pack(side="left", padx=(0, 0), pady=4)
 
     # ---- AI Prompts tab: list, add, edit, delete ----
     ctk.CTkLabel(
@@ -1591,6 +1642,7 @@ def main():
         for w in prompts_scroll.winfo_children():
             w.destroy()
         prompts = load_prompts()
+        _refresh_summary_prompt_menu()  # keep Transcript tab prompt dropdown in sync
         if not prompts:
             ctk.CTkLabel(
                 prompts_scroll,

@@ -3,5 +3,6 @@
   "meeting_mic_device": null,
   "loopback_device_index": null,
   "ffmpeg_mic_name": null,
-  "ffmpeg_loopback_name": null
+  "ffmpeg_loopback_name": null,
+  "transcription_model": "istupakov/parakeet-tdt-0.6b-v2-onnx"
 }
