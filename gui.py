@@ -1,18 +1,11 @@
 """
 GUI and app controller: CustomTkinter window, tabs, start/stop recording, prompts dialog.
 """
-import os
 import sys
 import queue
 import threading
 from datetime import date
 from pathlib import Path
-
-try:
-    from dotenv import load_dotenv
-except ImportError:
-    def load_dotenv(*args, **kwargs):
-        pass
 
 import customtkinter as ctk
 from tkinter import messagebox, filedialog
@@ -529,13 +522,12 @@ def main():
             app.summary_prompt_var.set(names[0])
 
     def _do_ai_summary():
-        load_dotenv()
-        # Prefer environment, then key stored in app (Settings tab)
-        api_key = (os.environ.get("OPENAI_API_KEY") or "").strip() or get_openai_api_key()
+        # key stored in app (Settings tab)
+        api_key = get_openai_api_key()
         if not api_key:
             messagebox.showerror(
                 "API key required",
-                "Add your OpenAI API key in Settings, or set OPENAI_API_KEY in your environment.",
+                "Add your OpenAI API key in Settings.",
                 parent=root,
             )
             return
@@ -655,7 +647,7 @@ def main():
 
     # OpenAI API key (stored securely in user app data)
     ctk.CTkLabel(settings_card, text="OpenAI API key", font=ctk.CTkFont(family=UI_FONT_FAMILY, size=F.header, weight="bold")).pack(anchor="w", pady=(0, 4))
-    ctk.CTkLabel(settings_card, text="Required for AI Summary. Stored on this device only; environment variable OPENAI_API_KEY overrides this if set.", font=ctk.CTkFont(family=UI_FONT_FAMILY, size=F.small), text_color="gray", wraplength=520).pack(anchor="w", pady=(0, 6))
+    ctk.CTkLabel(settings_card, text="Required for AI Summary. Stored on this device only.", font=ctk.CTkFont(family=UI_FONT_FAMILY, size=F.small), text_color="gray", wraplength=520).pack(anchor="w", pady=(0, 6))
     api_key_row = ctk.CTkFrame(settings_card, fg_color="transparent")
     api_key_row.pack(fill="x", pady=(0, UI_PAD_LG))
     app.openai_key_entry = ctk.CTkEntry(api_key_row, width=400, height=32, font=ctk.CTkFont(family=UI_FONT_FAMILY, size=F.small), show="•", placeholder_text="Enter key to save, or leave blank to keep existing")
