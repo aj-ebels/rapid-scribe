@@ -30,7 +30,7 @@ python -m venv .venv
 3. Tell colleagues:
    - Unzip the folder anywhere (e.g. Desktop or Documents).
    - Double‑click **`Run Meetings Transcriber.bat`** (or **`meetings.exe`**) to start the app.
-   - The first time they run it, the app will download the speech model (about 660 MB); after that it starts quickly.
+   - They open the **Models** tab and click **Download & install** to get the speech model (~250 MB), or it will download the first time they click **Start**.
 
 No Python or other install needed on their side.
 

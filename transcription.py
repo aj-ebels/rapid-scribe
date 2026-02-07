@@ -7,6 +7,8 @@ from pathlib import Path
 from settings import DEFAULT_TRANSCRIPTION_MODEL
 
 PARAKEET_MODEL = DEFAULT_TRANSCRIPTION_MODEL
+# Recommended model for new users (Hugging Face); same as used by onnx-asr Parakeet stack.
+STANDARD_TRANSCRIPTION_MODEL = "istupakov/parakeet-tdt-0.6b-v2-onnx"
 _parakeet_model = None
 _parakeet_model_id = None
 
@@ -49,6 +51,21 @@ def clear_transcription_model_cache():
     global _parakeet_model, _parakeet_model_id
     _parakeet_model = None
     _parakeet_model_id = None
+
+
+def download_transcription_model(model_id):
+    """
+    Download (and briefly load) a transcription model from Hugging Face so it is cached for use.
+    Does not keep the model in memory. Returns (success: bool, error_message: str | None).
+    """
+    try:
+        import onnx_asr
+        onnx_asr.load_model(model_id, quantization="int8")
+        # Don't cache in our global; we only needed to trigger the download. Next get_transcription_model() will load from cache.
+        clear_transcription_model_cache()
+        return True, None
+    except Exception as e:
+        return False, str(e)
 
 
 def list_installed_transcription_models():

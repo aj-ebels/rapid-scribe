@@ -8,7 +8,7 @@ _BASE = Path(__file__).resolve().parent
 SETTINGS_FILE = _BASE / "settings.json"
 
 # Default transcription model (Hugging Face repo id)
-DEFAULT_TRANSCRIPTION_MODEL = "nemo-parakeet-tdt-0.6b-v2"
+DEFAULT_TRANSCRIPTION_MODEL = "istupakov/parakeet-tdt-0.6b-v2-onnx"
 
 AUDIO_MODE_DEFAULT = "default"
 AUDIO_MODE_LOOPBACK = "loopback"

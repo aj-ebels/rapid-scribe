@@ -22,10 +22,12 @@ from devices import list_audio_devices, list_loopback_devices, get_default_monit
 from prompts import load_prompts, add_prompt, update_prompt, delete_prompt, get_prompt_by_id, TRANSCRIPT_PLACEHOLDER
 from transcription import (
     PARAKEET_MODEL,
+    STANDARD_TRANSCRIPTION_MODEL,
     get_transcription_model,
     clear_transcription_model_cache,
     list_installed_transcription_models,
     uninstall_transcription_model,
+    download_transcription_model,
     transcription_worker,
 )
 from capture import (
@@ -58,6 +60,41 @@ def poll_text_queue(app):
         app.root.after(200, lambda: poll_text_queue(app))
 
 
+def _is_transcription_model_installed(app):
+    """Return True if the currently selected transcription model is installed (in cache)."""
+    models, err = list_installed_transcription_models()
+    if err or not models:
+        return False
+    repo_ids = [m["repo_id"] for m in models]
+    current = app.settings.get("transcription_model") or PARAKEET_MODEL
+    return current in repo_ids
+
+
+def update_model_status(app):
+    """Update status bar, Start button, and model status label to reflect whether the selected model is installed."""
+    installed = _is_transcription_model_installed(app)
+    if getattr(app, "model_status_var", None) is not None:
+        if installed:
+            app.model_status_var.set("Transcription model: Ready — you can start recording.")
+            if getattr(app, "model_status_label", None) is not None:
+                app.model_status_label.configure(text_color="gray")
+        else:
+            app.model_status_var.set("Transcription model: Not installed — open the Models tab and click \"Download & install\" before recording.")
+            if getattr(app, "model_status_label", None) is not None:
+                try:
+                    c = getattr(app, "model_status_warning_color", "#f7768e")
+                    app.model_status_label.configure(text_color=c)
+                except Exception:
+                    pass
+    if getattr(app, "status_var", None) is not None:
+        if installed:
+            app.status_var.set("Ready — click Start to begin")
+        else:
+            app.status_var.set("Install a transcription model first (Models tab → Download & install)")
+    if getattr(app, "start_btn", None) is not None:
+        app.start_btn.configure(state="normal" if installed else "disabled")
+
+
 def start_stop(app):
     if app.running:
         app.running = False
@@ -84,6 +121,14 @@ def start_stop(app):
         app.status_var.set("Stopped")
         return
     app.stop_event.clear()
+    if not _is_transcription_model_installed(app):
+        messagebox.showinfo(
+            "Transcription model required",
+            "Before your first recording, you need to install the transcription model.\n\n"
+            "Go to the Models tab and click \"Download & install\" to download the recommended model (one-time setup, about 250 MB).",
+            parent=app.root,
+        )
+        return
     mode, mic_idx, loopback_idx = get_effective_audio_device(app)
 
     if mode == AUDIO_MODE_DEFAULT:
@@ -239,11 +284,7 @@ def _get_dpi_scale():
 
 
 def main():
-    _saved_model = load_settings().get("transcription_model") or PARAKEET_MODEL
-    print(f"Loading transcription model '{_saved_model}' (first run may download from Hugging Face)...")
-    get_transcription_model(_saved_model)
-    print("Model ready. Opening window...")
-
+    # Model is no longer loaded at startup. Install from the Models tab, or it will download on first Start.
     ctk.set_appearance_mode("dark")
     _base = Path(__file__).resolve().parent
     theme_path = _base / "themes" / "meetings-dark.json"
@@ -316,6 +357,7 @@ def main():
     header.pack_propagate(False)
     app.status_var = ctk.StringVar(value="Ready — click Start to begin")
     ctk.CTkLabel(header, textvariable=app.status_var, font=ctk.CTkFont(family=UI_FONT_FAMILY, size=F.header, weight="bold")).pack(side="left", padx=UI_PAD_LG, pady=UI_PAD)
+    app.model_status_var = ctk.StringVar(value="")
     btn_frame = ctk.CTkFrame(header, fg_color="transparent")
     btn_frame.pack(side="right", padx=UI_PAD_LG, pady=UI_PAD)
     app.start_btn = ctk.CTkButton(btn_frame, text="Start", command=lambda: start_stop(app), font=ctk.CTkFont(family=UI_FONT_FAMILY, size=F.header, weight="bold"), width=100, height=36, corner_radius=UI_RADIUS, fg_color=COLORS["primary_fg"], hover_color=COLORS["primary_hover"])
@@ -333,6 +375,48 @@ def main():
     # Models tab
     models_card = ctk.CTkFrame(tab_models, fg_color="transparent")
     models_card.pack(fill="both", expand=True)
+
+    # Install standard model (for new users)
+    install_card = ctk.CTkFrame(models_card, fg_color=COLORS["card"], corner_radius=UI_RADIUS, border_width=1)
+    install_card.pack(fill="x", padx=UI_PAD_LG, pady=(UI_PAD, UI_PAD_LG))
+    ctk.CTkLabel(install_card, text="Step 1: Install the transcription model (required before first recording)", font=ctk.CTkFont(family=UI_FONT_FAMILY, size=F.header, weight="bold")).pack(anchor="w", padx=UI_PAD_LG, pady=(UI_PAD, 4))
+    ctk.CTkLabel(install_card, text="Recording and live transcription require a speech-to-text model. Download the recommended model below once; after that you can start recording from the main screen. Size: about 250 MB.", font=ctk.CTkFont(family=UI_FONT_FAMILY, size=F.small), text_color="gray", wraplength=600).pack(anchor="w", padx=UI_PAD_LG, pady=(0, 4))
+    ctk.CTkLabel(install_card, text=f"Model: {STANDARD_TRANSCRIPTION_MODEL}", font=ctk.CTkFont(family=UI_FONT_FAMILY, size=F.tiny), text_color="gray", wraplength=600).pack(anchor="w", padx=UI_PAD_LG, pady=(0, UI_PAD))
+    install_row = ctk.CTkFrame(install_card, fg_color="transparent")
+    install_row.pack(fill="x", padx=UI_PAD_LG, pady=(0, UI_PAD))
+    app.install_model_status_var = ctk.StringVar(value="")
+    ctk.CTkLabel(install_row, textvariable=app.install_model_status_var, font=ctk.CTkFont(family=UI_FONT_FAMILY, size=F.small), text_color="gray").pack(side="left", padx=(0, UI_PAD))
+    def _do_install_standard_model():
+        app.install_model_status_var.set("Downloading… (this may take a few minutes)")
+        app.install_model_btn.configure(state="disabled")
+        if getattr(app, "model_status_var", None) is not None:
+            app.model_status_var.set("Transcription model: Downloading… (one-time setup)")
+        if getattr(app, "model_status_label", None) is not None:
+            app.model_status_label.configure(text_color="gray")
+        result_holder = []
+        def worker():
+            ok, err = download_transcription_model(STANDARD_TRANSCRIPTION_MODEL)
+            result_holder.append((ok, err))
+        def check_done():
+            if not result_holder:
+                app.root.after(300, check_done)
+                return
+            ok, err = result_holder[0]
+            app.install_model_btn.configure(state="normal")
+            if ok:
+                app.install_model_status_var.set("Ready. You can start recording.")
+                app.settings["transcription_model"] = STANDARD_TRANSCRIPTION_MODEL
+                save_settings(app.settings)
+                refresh_models_tab()
+                update_model_status(app)
+            else:
+                app.install_model_status_var.set("")
+                messagebox.showerror("Install failed", err or "Download failed.", parent=app.root)
+        threading.Thread(target=worker, daemon=True).start()
+        app.root.after(300, check_done)
+    app.install_model_btn = ctk.CTkButton(install_row, text="Download & install", font=ctk.CTkFont(family=UI_FONT_FAMILY, size=F.small), width=140, height=32, corner_radius=UI_RADIUS, fg_color=COLORS["primary_fg"], hover_color=COLORS["primary_hover"], command=_do_install_standard_model)
+    app.install_model_btn.pack(side="left")
+
     ctk.CTkLabel(models_card, text="Installed models", font=ctk.CTkFont(family=UI_FONT_FAMILY, size=F.title, weight="bold")).pack(anchor="w", padx=UI_PAD_LG, pady=(UI_PAD, 6))
     model_selector_row = ctk.CTkFrame(models_card, fg_color="transparent")
     model_selector_row.pack(fill="x", padx=UI_PAD_LG, pady=(0, UI_PAD))
@@ -343,6 +427,7 @@ def main():
         app.settings["transcription_model"] = choice
         save_settings(app.settings)
         clear_transcription_model_cache()
+        update_model_status(app)
 
     app.model_selector = ctk.CTkOptionMenu(model_selector_row, variable=app.model_selector_var, values=[], font=ctk.CTkFont(family=UI_FONT_FAMILY, size=F.small), width=320, command=on_model_selected)
     app.model_selector.pack(side="left")
@@ -366,6 +451,17 @@ def main():
             app.settings["transcription_model"] = chosen
             save_settings(app.settings)
             clear_transcription_model_cache()
+        # Update install-standard-model button when list changes
+        if getattr(app, "install_model_btn", None) is not None:
+            if STANDARD_TRANSCRIPTION_MODEL in repo_ids:
+                app.install_model_btn.configure(state="disabled")
+                if getattr(app, "install_model_status_var", None) is not None:
+                    app.install_model_status_var.set("Already installed.")
+            else:
+                app.install_model_btn.configure(state="normal")
+                if getattr(app, "install_model_status_var", None) is not None and not (app.install_model_status_var.get() or "").startswith("Ready"):
+                    app.install_model_status_var.set("")
+        update_model_status(app)
         if err:
             ctk.CTkLabel(models_scroll, text=f"Error: {err[:50]}…" if len(err) > 50 else err, font=ctk.CTkFont(family=UI_FONT_FAMILY, size=F.small), text_color=COLORS["error_text"], wraplength=400).pack(anchor="w", padx=UI_PAD, pady=4)
             return
@@ -618,7 +714,11 @@ def main():
         dev_info = f"Capture: {mode_label} · Input: {name}"
     else:
         dev_info = f"Capture: {mode_label}"
-    ctk.CTkLabel(main_content, text=dev_info, font=ctk.CTkFont(family=UI_FONT_FAMILY, size=F.small), text_color="gray").pack(anchor="w", padx=UI_PAD_LG, pady=(0, UI_PAD))
+    ctk.CTkLabel(main_content, text=dev_info, font=ctk.CTkFont(family=UI_FONT_FAMILY, size=F.small), text_color="gray").pack(anchor="w", padx=UI_PAD_LG, pady=(0, 4))
+    app.model_status_warning_color = COLORS["error_text"][1]
+    app.model_status_label = ctk.CTkLabel(main_content, textvariable=app.model_status_var, font=ctk.CTkFont(family=UI_FONT_FAMILY, size=F.small), text_color="gray", wraplength=700)
+    app.model_status_label.pack(anchor="w", padx=UI_PAD_LG, pady=(0, UI_PAD))
+    update_model_status(app)
 
     root.protocol("WM_DELETE_WINDOW", lambda: (app.stop_event.set(), root.destroy()))
     root.mainloop()
