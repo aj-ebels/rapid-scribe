@@ -35,6 +35,8 @@ This document explains how to build the **Blue Bridge Meeting Companion** into a
 
    Then in the app: open the **Models** tab, ensure the default model is selected, click **Download & install**. Close the app.
 
+5. **Required for transcription in the built app:** The spec bundles the `onnx_asr` package’s `preprocessors` folder (e.g. `nemo128.onnx`) so that the frozen exe can load the model. Ensure `onnx_asr` is installed in the venv when you run `pyinstaller` (it is included via `requirements.txt`).
+
 ## Build steps
 
 1. **From the project root (where `meetings.spec` is):**

@@ -16,6 +16,16 @@ prompts_src = os.path.join(SPEC_DIR, "prompts.json")
 if os.path.isfile(prompts_src):
     datas.append((prompts_src, "."))
 
+# Bundle onnx_asr preprocessors (nemo128.onnx etc.) so model load finds them when frozen
+try:
+    import onnx_asr
+    _onnx_asr_root = os.path.dirname(os.path.abspath(onnx_asr.__file__))
+    _preprocessors = os.path.join(_onnx_asr_root, "preprocessors")
+    if os.path.isdir(_preprocessors):
+        datas.append((_preprocessors, "onnx_asr/preprocessors"))
+except Exception:
+    pass
+
 # Hidden imports for dynamic / optional modules
 hiddenimports = [
     "customtkinter",
@@ -26,6 +36,7 @@ hiddenimports = [
     "huggingface_hub",
     "onnx",
     "onnxruntime",
+    "onnx_asr",
 ]
 # Windows-only
 if __import__("sys").platform == "win32":
