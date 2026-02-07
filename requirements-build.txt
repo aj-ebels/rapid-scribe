@@ -1,0 +1,3 @@
+# Install these only when building the Windows executable:
+#   pip install -r requirements.txt -r requirements-build.txt
+pyinstaller>=6.0.0

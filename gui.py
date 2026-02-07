@@ -280,7 +280,11 @@ def _get_dpi_scale():
 def main():
     # Theme and scaling (model loads on first Start or when installing from Models tab)
     ctk.set_appearance_mode("dark")
-    _base = Path(__file__).resolve().parent
+    # When frozen (PyInstaller), use bundle root so themes/assets are found (onefile: _MEIPASS; onedir: exe dir)
+    if getattr(sys, "frozen", False):
+        _base = Path(getattr(sys, "_MEIPASS", Path(sys.executable).parent))
+    else:
+        _base = Path(__file__).resolve().parent
     theme_path = _base / "themes" / "meetings-dark.json"
     if theme_path.exists():
         ctk.set_default_color_theme(str(theme_path))
