@@ -9,3 +9,4 @@ customtkinter>=5.2.0
 onnx-asr[cpu,hub]>=0.10.0
 # OpenAI API for AI Summary
 openai>=1.0.0
+Pillow>=10.0.0

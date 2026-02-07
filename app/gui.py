@@ -10,6 +10,11 @@ from pathlib import Path
 import customtkinter as ctk
 from tkinter import messagebox, filedialog
 
+try:
+    from PIL import Image as PILImage
+except ImportError:
+    PILImage = None
+
 from .settings import load_settings, save_settings, AUDIO_MODE_DEFAULT, AUDIO_MODE_LOOPBACK, AUDIO_MODE_MEETING
 from .devices import list_audio_devices, list_loopback_devices, get_default_monitor_device, get_effective_audio_device
 from .prompts import load_prompts, add_prompt, update_prompt, delete_prompt, get_prompt_by_id, TRANSCRIPT_PLACEHOLDER
@@ -133,8 +138,11 @@ def start_stop(app):
                 t.join(timeout=CHUNK_DURATION_SEC + 2)
         if app.transcription_thread and app.transcription_thread.is_alive():
             app.transcription_thread.join(timeout=10)
-        app.start_btn.configure(state="normal")
-        app.stop_btn.configure(state="disabled")
+        if getattr(app, "stop_btn", None) is not None:
+            app.start_btn.configure(state="normal")
+            app.stop_btn.configure(state="disabled")
+        elif getattr(app, "_record_ctk", None) is not None:
+            app.start_btn.configure(image=app._record_ctk)
         app.status_var.set("Stopped")
         return
     app.stop_event.clear()
@@ -227,8 +235,11 @@ def start_stop(app):
     )
     app.transcription_thread.start()
     app.running = True
-    app.start_btn.configure(state="disabled")
-    app.stop_btn.configure(state="normal")
+    if getattr(app, "stop_btn", None) is not None:
+        app.start_btn.configure(state="disabled")
+        app.stop_btn.configure(state="normal")
+    elif getattr(app, "_stop_ctk", None) is not None:
+        app.start_btn.configure(image=app._stop_ctk)
     poll_text_queue(app)
 
 
@@ -379,7 +390,33 @@ def main():
     main_content = ctk.CTkFrame(content_frame, fg_color="transparent")
     main_content.pack(fill="both", expand=True)
 
-    header = ctk.CTkFrame(main_content, fg_color=COLORS["header"], corner_radius=UI_RADIUS, height=52)
+    _icons_dir = _base / "assets" / "icons"
+    _record_path = _icons_dir / "record.png"
+    _stop_path = _icons_dir / "stop recording.png"
+    _record_img = _stop_img = None
+    if PILImage is not None:
+        try:
+            if _record_path.exists():
+                _record_img = PILImage.open(_record_path).convert("RGBA")
+            if _stop_path.exists():
+                _stop_img = PILImage.open(_stop_path).convert("RGBA")
+        except Exception:
+            pass
+    _use_image_buttons = _record_img is not None and _stop_img is not None
+
+    _btn_max_w, _btn_max_h = 120, 48
+    _header_height = 52
+    if _use_image_buttons:
+        _rw, _rh = _record_img.size
+        _sw, _sh = _stop_img.size
+        _r_scale = min(_btn_max_w / _rw, _btn_max_h / _rh, 1.0)
+        _s_scale = min(_btn_max_w / _sw, _btn_max_h / _sh, 1.0)
+        _disp_rw = max(1, int(_rw * _r_scale))
+        _disp_rh = max(1, int(_rh * _r_scale))
+        _disp_sw = max(1, int(_sw * _s_scale))
+        _disp_sh = max(1, int(_sh * _s_scale))
+        _header_height = max(52, 2 * UI_PAD + max(_disp_rh, _disp_sh) + 12)
+    header = ctk.CTkFrame(main_content, fg_color=COLORS["header"], corner_radius=UI_RADIUS, height=_header_height)
     header.pack(fill="x", pady=(0, UI_PAD))
     header.pack_propagate(False)
     app.status_var = ctk.StringVar(value="Ready — click Start to begin")
@@ -387,10 +424,19 @@ def main():
     app.model_status_var = ctk.StringVar(value="")
     btn_frame = ctk.CTkFrame(header, fg_color="transparent")
     btn_frame.pack(side="right", padx=UI_PAD_LG, pady=UI_PAD)
-    app.start_btn = ctk.CTkButton(btn_frame, text="Start", command=lambda: start_stop(app), font=ctk.CTkFont(family=UI_FONT_FAMILY, size=F.header, weight="bold"), width=100, height=36, corner_radius=UI_RADIUS, fg_color=COLORS["primary_fg"], hover_color=COLORS["primary_hover"])
-    app.start_btn.pack(side="left", padx=(0, UI_PAD))
-    app.stop_btn = ctk.CTkButton(btn_frame, text="Stop", command=lambda: start_stop(app), state="disabled", font=ctk.CTkFont(family=UI_FONT_FAMILY, size=F.header, weight="bold"), width=100, height=36, corner_radius=UI_RADIUS, fg_color=COLORS["danger_fg"], hover_color=COLORS["danger_hover"])
-    app.stop_btn.pack(side="left")
+    if _use_image_buttons:
+        _btn_w = max(_disp_rw, _disp_sw)
+        _btn_h = max(_disp_rh, _disp_sh)
+        app._record_ctk = ctk.CTkImage(light_image=_record_img, dark_image=_record_img, size=(_btn_w, _btn_h))
+        app._stop_ctk = ctk.CTkImage(light_image=_stop_img, dark_image=_stop_img, size=(_btn_w, _btn_h))
+        app.start_btn = ctk.CTkButton(btn_frame, image=app._record_ctk, text="", command=lambda: start_stop(app), width=_btn_w, height=_btn_h, fg_color="transparent", hover_color=("gray85", "gray25"))
+        app.start_btn.pack(side="left")
+        app.stop_btn = None
+    else:
+        app.start_btn = ctk.CTkButton(btn_frame, text="Start", command=lambda: start_stop(app), font=ctk.CTkFont(family=UI_FONT_FAMILY, size=F.header, weight="bold"), width=100, height=36, corner_radius=UI_RADIUS, fg_color=COLORS["primary_fg"], hover_color=COLORS["primary_hover"])
+        app.start_btn.pack(side="left", padx=(0, UI_PAD))
+        app.stop_btn = ctk.CTkButton(btn_frame, text="Stop", command=lambda: start_stop(app), state="disabled", font=ctk.CTkFont(family=UI_FONT_FAMILY, size=F.header, weight="bold"), width=100, height=36, corner_radius=UI_RADIUS, fg_color=COLORS["danger_fg"], hover_color=COLORS["danger_hover"])
+        app.stop_btn.pack(side="left")
 
     tabview = ctk.CTkTabview(main_content, fg_color=COLORS["card"], corner_radius=UI_RADIUS)
     tabview.pack(fill="both", expand=True, pady=(0, UI_PAD))
