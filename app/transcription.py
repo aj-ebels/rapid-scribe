@@ -1,7 +1,10 @@
 """
 Transcription: Parakeet/ONNX ASR model loading, cache, installed-models list, transcription worker.
 """
+import contextlib
+import io
 import queue
+import sys
 from pathlib import Path
 
 from .settings import DEFAULT_TRANSCRIPTION_MODEL
@@ -54,6 +57,25 @@ def clear_transcription_model_cache():
     _parakeet_model_id = None
 
 
+@contextlib.contextmanager
+def _safe_stdout_stderr():
+    """
+    Context manager that ensures sys.stdout and sys.stderr have a .write() method.
+    In a frozen Windows GUI app they can be None, which breaks tqdm/huggingface_hub.
+    """
+    saved_stdout = sys.stdout
+    saved_stderr = sys.stderr
+    try:
+        if sys.stdout is None:
+            sys.stdout = io.StringIO()
+        if sys.stderr is None:
+            sys.stderr = io.StringIO()
+        yield
+    finally:
+        sys.stdout = saved_stdout
+        sys.stderr = saved_stderr
+
+
 def download_transcription_model(model_id, progress_queue=None):
     """
     Download (and briefly load) a transcription model from Hugging Face so it is cached for use.
@@ -63,38 +85,40 @@ def download_transcription_model(model_id, progress_queue=None):
     """
     if progress_queue is not None:
         try:
-            from tqdm.auto import tqdm as base_tqdm
+            with _safe_stdout_stderr():
+                from tqdm.auto import tqdm as base_tqdm
 
-            def make_progress_tqdm_class(q):
-                """Return a tqdm subclass that pushes (current_bytes, total_bytes) to q. Hub expects a class, not a function."""
+                def make_progress_tqdm_class(q):
+                    """Return a tqdm subclass that pushes (current_bytes, total_bytes) to q. Hub expects a class, not a function."""
 
-                class ProgressTqdm(base_tqdm):
-                    def __init__(self, *args, **kwargs):
-                        kwargs.pop("name", None)  # hub-specific; standard tqdm doesn't accept it
-                        self._progress_queue = q
-                        super().__init__(*args, **kwargs)
+                    class ProgressTqdm(base_tqdm):
+                        def __init__(self, *args, **kwargs):
+                            kwargs.pop("name", None)  # hub-specific; standard tqdm doesn't accept it
+                            self._progress_queue = q
+                            super().__init__(*args, **kwargs)
 
-                    def update(self, n=1):
-                        super().update(n)
-                        if self._progress_queue is not None:
-                            try:
-                                self._progress_queue.put((self.n, self.total), block=False)
-                            except Exception:
-                                pass
+                        def update(self, n=1):
+                            super().update(n)
+                            if self._progress_queue is not None:
+                                try:
+                                    self._progress_queue.put((self.n, self.total), block=False)
+                                except Exception:
+                                    pass
 
-                return ProgressTqdm
+                    return ProgressTqdm
 
-            from huggingface_hub import snapshot_download
+                from huggingface_hub import snapshot_download
 
-            snapshot_download(repo_id=model_id, tqdm_class=make_progress_tqdm_class(progress_queue))
+                snapshot_download(repo_id=model_id, tqdm_class=make_progress_tqdm_class(progress_queue))
             clear_transcription_model_cache()
             return True, None
         except Exception as e:
             return False, str(e)
 
     try:
-        import onnx_asr
-        onnx_asr.load_model(model_id, quantization="int8")
+        with _safe_stdout_stderr():
+            import onnx_asr
+            onnx_asr.load_model(model_id, quantization="int8")
         # Don't cache in our global; we only needed to trigger the download. Next get_transcription_model() will load from cache.
         clear_transcription_model_cache()
         return True, None
