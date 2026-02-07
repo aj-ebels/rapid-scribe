@@ -328,8 +328,7 @@ def main():
 
     root = ctk.CTk()
     root.title("Blue Bridge Meeting Companion")
-    icon_base = Path(sys.executable).parent if getattr(sys, "frozen", False) else _base
-    _icon = icon_base / "icon.ico"
+    _icon = _base / "icon.ico"
     if _icon.exists():
         try:
             root.iconbitmap(str(_icon))
