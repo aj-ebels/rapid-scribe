@@ -1,6 +1,7 @@
 """
 AI prompt templates: JSON storage, CRUD, placeholder for transcript insertion.
-User prompts live in app data; bundled prompts.json is used as initial default when shipping the app.
+- Dev: read/write project prompts.json so edits show in the repo file.
+- Frozen: read/write app-data prompts.json; bundled prompts.json (under _MEIPASS) is copied on first run.
 """
 import json
 import os
@@ -24,14 +25,16 @@ def _get_app_data_dir():
 
 
 def _get_user_prompts_path():
-    """Path to the writable prompts file (app data)."""
-    return _get_app_data_dir() / "prompts.json"
+    """Path to the writable prompts file. In dev = project prompts.json; when frozen = app data."""
+    if getattr(sys, "frozen", False):
+        return _get_app_data_dir() / "prompts.json"
+    return _BASE / "prompts.json"
 
 
 def _get_bundled_prompts_path():
-    """Path to the shipped default prompts (next to exe when frozen, else project root)."""
+    """Path to the shipped default prompts. When frozen, bundle is under _MEIPASS (_internal)."""
     if getattr(sys, "frozen", False):
-        return Path(sys.executable).parent / "prompts.json"
+        return Path(getattr(sys, "_MEIPASS", Path(sys.executable).parent)) / "prompts.json"
     return _BASE / "prompts.json"
 
 
