@@ -1,6 +1,7 @@
 # Audio: On Ubuntu/WSL2 install PortAudio first: sudo apt-get install libportaudio2 portaudio19-dev
-# Windows: no extra system install; use Stereo Mix or loopback for system audio.
+# Windows: for system/call audio (like Notion) install pyaudiowpatch for WASAPI loopback capture.
 sounddevice>=0.4.6
+pyaudiowpatch>=0.2.12.7; sys_platform == "win32"
 numpy>=1.24.0
 scipy>=1.10.0
 customtkinter>=5.2.0

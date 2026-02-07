@@ -13,10 +13,9 @@ Open **Command Prompt** or **PowerShell** (in Windows) and run:
 ```cmd
 cd path\to\meetings
 python -m venv .venv
-.venv\Scripts\activate
-pip install -r requirements.txt
-pip install pyinstaller
-pyinstaller meetings.spec
+.venv\Scripts\python.exe -m pip install -r requirements.txt
+.venv\Scripts\python.exe -m pip install pyinstaller
+.venv\Scripts\python.exe -m pyinstaller meetings.spec
 ```
 
 ## 2. What you get
@@ -31,7 +30,7 @@ pyinstaller meetings.spec
 3. Tell colleagues:
    - Unzip the folder anywhere (e.g. Desktop or Documents).
    - Double‑click **`Run Meetings Transcriber.bat`** (or **`meetings.exe`**) to start the app.
-   - The first time they run it, the app will download the speech model (~150 MB); after that it starts quickly.
+   - The first time they run it, the app will download the speech model (about 660 MB); after that it starts quickly.
 
 No Python or other install needed on their side.
 

@@ -8,8 +8,92 @@ Same Parakeet/ONNX stack as Meetily: https://github.com/Zackriya-Solutions/meeti
 import os
 import sys
 import json
+import subprocess
 import tempfile
+
+# Subprocess entry for frozen build (PyInstaller): mic capture only — no pyaudiowpatch/GUI in this process
+if len(sys.argv) >= 2 and sys.argv[1] == "--mic-capture":
+    if len(sys.argv) < 3:
+        sys.stderr.write("Usage: --mic-capture <device_index> [sample_rate] [chunk_samples]\n")
+        sys.exit(1)
+    import numpy as _np
+    import sounddevice as _sd
+    _di = int(sys.argv[2])
+    _sr = int(sys.argv[3]) if len(sys.argv) > 3 else 16000
+    _cs = int(sys.argv[4]) if len(sys.argv) > 4 else 80000
+    _out = sys.stdout.buffer
+    try:
+        while True:
+            _chunk = _sd.rec(_cs, samplerate=_sr, channels=1, dtype=_np.float32, device=_di, blocking=True)
+            if _chunk is not None and _chunk.size > 0:
+                _out.write(_np.asarray(_chunk, dtype=_np.float32).flatten().tobytes())
+                _out.flush()
+    except (KeyboardInterrupt, BrokenPipeError):
+        pass
+    except Exception as e:
+        sys.stderr.write(f"mic_capture error: {e}\n")
+        sys.exit(1)
+    sys.exit(0)
+# Loopback subprocess entry (frozen build): pyaudiowpatch only, write float32 PCM to stdout
+if len(sys.argv) >= 2 and sys.argv[1] == "--loopback-capture":
+    if len(sys.argv) < 3:
+        sys.stderr.write("Usage: --loopback-capture <device_index|default> [sample_rate] [chunk_samples]\n")
+        sys.exit(1)
+    if sys.platform != "win32":
+        sys.stderr.write("Loopback is Windows-only.\n")
+        sys.exit(1)
+    import numpy as _np
+    import pyaudiowpatch as _pyaudio
+    _dev_arg = sys.argv[2]
+    _dev_idx = None if _dev_arg.lower() == "default" else int(_dev_arg)
+    _sr = int(sys.argv[3]) if len(sys.argv) > 3 else 16000
+    _cs = int(sys.argv[4]) if len(sys.argv) > 4 else 80000
+    _dur = _cs / _sr
+    _out = sys.stdout.buffer
+    try:
+        with _pyaudio.PyAudio() as _p:
+            if _dev_idx is not None:
+                _dev = _p.get_device_info_by_index(_dev_idx)
+            else:
+                _wi = _p.get_host_api_info_by_type(_pyaudio.paWASAPI)
+                _dev = _p.get_device_info_by_index(_wi["defaultOutputDevice"])
+                if not _dev.get("isLoopbackDevice"):
+                    for _lb in _p.get_loopback_device_info_generator():
+                        if _dev["name"] in _lb["name"]:
+                            _dev = _lb
+                            break
+            _rate = int(_dev["defaultSampleRate"])
+            _ch = int(_dev["maxInputChannels"])
+            _nf = int(_rate * _dur) * _ch
+            while True:
+                _buf = []
+                with _p.open(format=_pyaudio.paInt16, channels=_ch, rate=_rate, frames_per_buffer=1024,
+                             input=True, input_device_index=_dev["index"]) as _stream:
+                    while len(_buf) * 1024 < _nf:
+                        try:
+                            _buf.append(_np.frombuffer(_stream.read(1024, exception_on_overflow=False), dtype=_np.int16))
+                        except Exception:
+                            break
+                if not _buf:
+                    continue
+                _raw = _np.concatenate(_buf)[:_nf].reshape(-1, _ch).astype(_np.float64) / 32768.0
+                _mono = _np.mean(_raw, axis=1).astype(_np.float32)
+                if _rate != _sr:
+                    _nout = int(round(len(_mono) * _sr / _rate))
+                    _mono = _np.array(_np.interp(_np.linspace(0, len(_mono) - 1, _nout), _np.arange(len(_mono)), _mono), dtype=_np.float32)
+                _mono = _mono[:_cs]
+                if len(_mono) < _cs:
+                    _mono = _np.pad(_mono, (0, _cs - len(_mono)))
+                _out.write(_mono.tobytes())
+                _out.flush()
+    except (KeyboardInterrupt, BrokenPipeError):
+        pass
+    except Exception as _e:
+        sys.stderr.write(f"loopback_capture error: {_e}\n")
+        sys.exit(1)
+    sys.exit(0)
 import threading
+import time
 import queue
 import uuid
 from datetime import date
@@ -33,6 +117,7 @@ except AttributeError:
 import numpy as np
 import sounddevice as sd
 from scipy.io import wavfile
+from scipy.signal import resample
 import customtkinter as ctk
 from tkinter import messagebox, filedialog
 
@@ -118,6 +203,70 @@ def uninstall_transcription_model(repo_id, revision_hashes):
 
 
 # -----------------------------------------------------------------------------
+# Settings (audio mode, devices)
+# -----------------------------------------------------------------------------
+
+SETTINGS_FILE = Path(__file__).resolve().parent / "settings.json"
+MIC_CAPTURE_SCRIPT = Path(__file__).resolve().parent / "mic_capture_subprocess.py"
+LOOPBACK_CAPTURE_SCRIPT = Path(__file__).resolve().parent / "loopback_capture_subprocess.py"
+AUDIO_MODE_DEFAULT = "default"
+AUDIO_MODE_MEETING_FFMPEG = "meeting_ffmpeg"
+AUDIO_MODE_LOOPBACK = "loopback"
+AUDIO_MODE_MEETING = "meeting"
+
+
+def load_settings():
+    """Load settings from JSON. Returns dict with audio_mode, meeting_mic_device, loopback_device_index."""
+    out = {"audio_mode": AUDIO_MODE_DEFAULT, "meeting_mic_device": None, "loopback_device_index": None,
+           "ffmpeg_mic_name": None, "ffmpeg_loopback_name": None}
+    if not SETTINGS_FILE.exists():
+        return out
+    try:
+        with open(SETTINGS_FILE, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        if isinstance(data, dict):
+            out["audio_mode"] = data.get("audio_mode", out["audio_mode"])
+            out["meeting_mic_device"] = data.get("meeting_mic_device")
+            out["loopback_device_index"] = data.get("loopback_device_index")
+            out["ffmpeg_mic_name"] = data.get("ffmpeg_mic_name")
+            out["ffmpeg_loopback_name"] = data.get("ffmpeg_loopback_name")
+    except Exception:
+        pass
+    return out
+
+
+def save_settings(settings):
+    """Write settings to JSON."""
+    try:
+        with open(SETTINGS_FILE, "w", encoding="utf-8") as f:
+            json.dump(settings, f, indent=2)
+    except Exception:
+        pass
+
+
+def list_loopback_devices():
+    """On Windows with pyaudiowpatch: list WASAPI loopback devices. Otherwise empty."""
+    if sys.platform != "win32":
+        return [], None
+    try:
+        import pyaudiowpatch as pyaudio
+        with pyaudio.PyAudio() as p:
+            devices = []
+            for loopback in p.get_loopback_device_info_generator():
+                devices.append({
+                    "index": loopback["index"],
+                    "name": loopback["name"],
+                    "default_samplerate": loopback.get("defaultSampleRate", 48000),
+                    "max_input_channels": loopback.get("maxInputChannels", 2),
+                })
+            return devices, None
+    except ImportError:
+        return [], "pyaudiowpatch not installed"
+    except Exception as e:
+        return [], str(e)
+
+
+# -----------------------------------------------------------------------------
 # Audio device helpers (WSL / PulseAudio Monitor)
 # -----------------------------------------------------------------------------
 
@@ -160,6 +309,26 @@ def get_default_monitor_device():
         return default["index"], None
     except Exception as e:
         return None, str(e)
+
+
+def get_effective_audio_device(app):
+    """
+    Resolve capture mode and device indices from settings.
+    Returns (mode, mic_device_index, loopback_device_index).
+    - mode: AUDIO_MODE_DEFAULT | AUDIO_MODE_LOOPBACK | AUDIO_MODE_MEETING
+    - mic_device_index: for default mode or meeting mic; None means use get_default_monitor_device()
+    - loopback_device_index: for loopback/meeting; None means default loopback
+    """
+    settings = load_settings() if app is None else getattr(app, "settings", load_settings())
+    mode = settings.get("audio_mode") or AUDIO_MODE_DEFAULT
+    if mode == AUDIO_MODE_LOOPBACK:
+        loopback_idx = settings.get("loopback_device_index")
+        return (AUDIO_MODE_LOOPBACK, None, loopback_idx)
+    if mode == AUDIO_MODE_MEETING:
+        return (AUDIO_MODE_MEETING, settings.get("meeting_mic_device"), settings.get("loopback_device_index"))
+    if mode == AUDIO_MODE_MEETING_FFMPEG:
+        return (AUDIO_MODE_MEETING_FFMPEG, settings.get("ffmpeg_mic_name"), settings.get("ffmpeg_loopback_name"))
+    return (AUDIO_MODE_DEFAULT, None, None)
 
 
 # -----------------------------------------------------------------------------
@@ -217,6 +386,350 @@ def capture_worker(device_index, chunk_queue, stop_event):
                 except queue.Full:
                     pass
             break
+
+
+def _ensure_float32_mono_16k(samples, in_rate, in_channels):
+    """Convert to float32 mono 16 kHz. samples: ndarray (frames,) or (frames, ch)."""
+    if samples.dtype != np.float32:
+        samples = samples.astype(np.float64) / (np.iinfo(samples.dtype).max if np.issubdtype(samples.dtype, np.integer) else 1.0)
+        samples = samples.astype(np.float32)
+    if len(samples.shape) > 1 and samples.shape[1] > 1:
+        samples = np.mean(samples, axis=1)
+    if in_rate != SAMPLE_RATE:
+        num_out = int(round(len(samples) * SAMPLE_RATE / in_rate))
+        samples = resample(samples, num_out).astype(np.float32)
+    return samples
+
+
+def capture_worker_loopback(loopback_device_index, chunk_queue, stop_event):
+    """Record from WASAPI loopback only (PyAudioWPatch). Puts chunk paths into chunk_queue."""
+    if sys.platform != "win32":
+        try:
+            chunk_queue.put_nowait(("error", "Loopback is only supported on Windows with pyaudiowpatch."))
+        except queue.Full:
+            pass
+        return
+    try:
+        import pyaudiowpatch as pyaudio
+    except ImportError:
+        try:
+            chunk_queue.put_nowait(("error", "pyaudiowpatch not installed. pip install pyaudiowpatch"))
+        except queue.Full:
+            pass
+        return
+    try:
+        with pyaudio.PyAudio() as p:
+            if loopback_device_index is not None:
+                dev = p.get_device_info_by_index(loopback_device_index)
+            else:
+                wasapi_info = p.get_host_api_info_by_type(pyaudio.paWASAPI)
+                default_speakers = p.get_device_info_by_index(wasapi_info["defaultOutputDevice"])
+                if not default_speakers.get("isLoopbackDevice"):
+                    for loopback in p.get_loopback_device_info_generator():
+                        if default_speakers["name"] in loopback["name"]:
+                            default_speakers = loopback
+                            break
+                dev = default_speakers
+            rate = int(dev["defaultSampleRate"])
+            ch = int(dev["maxInputChannels"])
+            chunk_frames_loopback = int(rate * CHUNK_DURATION_SEC) * ch
+            while not stop_event.is_set():
+                buf = []
+                with p.open(
+                    format=pyaudio.paInt16,
+                    channels=ch,
+                    rate=rate,
+                    frames_per_buffer=1024,
+                    input=True,
+                    input_device_index=dev["index"],
+                ) as stream:
+                    while len(buf) * 1024 < chunk_frames_loopback and not stop_event.is_set():
+                        try:
+                            data = stream.read(1024, exception_on_overflow=False)
+                            buf.append(np.frombuffer(data, dtype=np.int16))
+                        except Exception:
+                            break
+                if stop_event.is_set():
+                    break
+                if not buf:
+                    continue
+                raw = np.concatenate(buf)[:chunk_frames_loopback]
+                raw = raw.reshape(-1, ch).astype(np.float64) / 32768.0
+                mono = np.mean(raw, axis=1).astype(np.float32)
+                if rate != SAMPLE_RATE:
+                    num_out = int(round(len(mono) * SAMPLE_RATE / rate))
+                    mono = resample(mono, num_out).astype(np.float32)
+                mono = mono[:CHUNK_SAMPLES]
+                if len(mono) < CHUNK_SAMPLES:
+                    mono = np.pad(mono, (0, CHUNK_SAMPLES - len(mono)))
+                if _is_silent(mono):
+                    continue
+                chunk_int16 = (np.clip(mono, -1.0, 1.0) * 32767).astype(np.int16)
+                wavfile.write(str(CHUNK_PATH), SAMPLE_RATE, chunk_int16)
+                try:
+                    chunk_queue.put(str(CHUNK_PATH), timeout=1.0)
+                except queue.Full:
+                    pass
+    except Exception as e:
+        if not stop_event.is_set():
+            try:
+                chunk_queue.put_nowait(("error", str(e)))
+            except queue.Full:
+                pass
+
+
+def capture_worker_mic_sounddevice(device_index, out_queue, stop_event):
+    """Capture mic with sounddevice only; put float32 mono chunks (CHUNK_SAMPLES) into out_queue."""
+    try:
+        default_sr = sd.query_devices(device_index, "input")["default_samplerate"]
+        rate = int(default_sr)
+    except Exception:
+        rate = SAMPLE_RATE
+    while not stop_event.is_set():
+        try:
+            chunk = sd.rec(
+                CHUNK_SAMPLES,
+                samplerate=SAMPLE_RATE,
+                channels=CHANNELS,
+                dtype=np.float32,
+                device=device_index,
+                blocking=True,
+            )
+            if stop_event.is_set():
+                break
+            out_queue.put(chunk.copy())
+        except Exception as e:
+            if not stop_event.is_set():
+                try:
+                    out_queue.put(("error", str(e)))
+                except queue.Full:
+                    pass
+            break
+
+
+def capture_worker_loopback_for_meeting(loopback_device_index, out_queue, stop_event):
+    """Capture loopback with PyAudioWPatch; put float32 mono 16k chunks (CHUNK_SAMPLES) into out_queue."""
+    if sys.platform != "win32":
+        return
+    try:
+        import pyaudiowpatch as pyaudio
+    except ImportError:
+        return
+    try:
+        with pyaudio.PyAudio() as p:
+            if loopback_device_index is not None:
+                dev = p.get_device_info_by_index(loopback_device_index)
+            else:
+                wasapi_info = p.get_host_api_info_by_type(pyaudio.paWASAPI)
+                default_speakers = p.get_device_info_by_index(wasapi_info["defaultOutputDevice"])
+                if not default_speakers.get("isLoopbackDevice"):
+                    for loopback in p.get_loopback_device_info_generator():
+                        if default_speakers["name"] in loopback["name"]:
+                            default_speakers = loopback
+                            break
+                dev = default_speakers
+            rate = int(dev["defaultSampleRate"])
+            ch = int(dev["maxInputChannels"])
+            chunk_frames_loopback = int(rate * CHUNK_DURATION_SEC) * ch
+            while not stop_event.is_set():
+                buf = []
+                with p.open(
+                    format=pyaudio.paInt16,
+                    channels=ch,
+                    rate=rate,
+                    frames_per_buffer=1024,
+                    input=True,
+                    input_device_index=dev["index"],
+                ) as stream:
+                    while len(buf) * 1024 < chunk_frames_loopback and not stop_event.is_set():
+                        try:
+                            data = stream.read(1024, exception_on_overflow=False)
+                            buf.append(np.frombuffer(data, dtype=np.int16))
+                        except Exception:
+                            break
+                if stop_event.is_set():
+                    break
+                if not buf:
+                    continue
+                raw = np.concatenate(buf)[:chunk_frames_loopback]
+                raw = raw.reshape(-1, ch).astype(np.float64) / 32768.0
+                mono = np.mean(raw, axis=1).astype(np.float32)
+                if rate != SAMPLE_RATE:
+                    num_out = int(round(len(mono) * SAMPLE_RATE / rate))
+                    mono = resample(mono, num_out).astype(np.float32)
+                mono = mono[:CHUNK_SAMPLES]
+                if len(mono) < CHUNK_SAMPLES:
+                    mono = np.pad(mono, (0, CHUNK_SAMPLES - len(mono)))
+                out_queue.put(mono.copy())
+    except Exception:
+        if not stop_event.is_set():
+            try:
+                out_queue.put(("error", "Loopback failed"))
+            except queue.Full:
+                pass
+
+
+def capture_mixer_worker(mic_queue, loopback_queue, chunk_queue, stop_event):
+    """
+    Read one chunk from mic and one from loopback (sounddevice + pyaudiowpatch);
+    mix 50/50 and push to chunk_queue as WAV path. This avoids two WASAPI streams
+    in the same library so the mic stays active.
+    """
+    while not stop_event.is_set():
+        try:
+            mic_chunk = mic_queue.get(timeout=0.5)
+            if isinstance(mic_chunk, tuple) and mic_chunk[0] == "error":
+                chunk_queue.put_nowait(("error", mic_chunk[1]))
+                continue
+        except queue.Empty:
+            continue
+        try:
+            loopback_chunk = loopback_queue.get(timeout=CHUNK_DURATION_SEC + 1)
+            if isinstance(loopback_chunk, tuple) and loopback_chunk[0] == "error":
+                chunk_queue.put_nowait(("error", loopback_chunk[1]))
+                continue
+        except queue.Empty:
+            continue
+        if stop_event.is_set():
+            break
+        # Align lengths
+        m = np.asarray(mic_chunk, dtype=np.float32).flatten()[:CHUNK_SAMPLES]
+        l = np.asarray(loopback_chunk, dtype=np.float32).flatten()[:CHUNK_SAMPLES]
+        if len(m) < CHUNK_SAMPLES:
+            m = np.pad(m, (0, CHUNK_SAMPLES - len(m)))
+        if len(l) < CHUNK_SAMPLES:
+            l = np.pad(l, (0, CHUNK_SAMPLES - len(l)))
+        mixed = (0.5 * m + 0.5 * l).astype(np.float32)
+        if _is_silent(mixed):
+            continue
+        chunk_int16 = (np.clip(mixed, -1.0, 1.0) * 32767).astype(np.int16)
+        wavfile.write(str(CHUNK_PATH), SAMPLE_RATE, chunk_int16)
+        try:
+            chunk_queue.put(str(CHUNK_PATH), timeout=1.0)
+        except queue.Full:
+            pass
+
+
+def mic_pipe_reader_thread(proc, mic_queue, stop_event):
+    """
+    Read raw float32 PCM from subprocess stdout (mic_capture_subprocess.py).
+    Puts numpy float32 arrays of shape (CHUNK_SAMPLES,) into mic_queue.
+    """
+    chunk_bytes = CHUNK_SAMPLES * 4
+    try:
+        while not stop_event.is_set():
+            data = proc.stdout.read(chunk_bytes)
+            if not data:
+                break
+            if len(data) < chunk_bytes:
+                data = data + b"\x00" * (chunk_bytes - len(data))
+            arr = np.frombuffer(data, dtype=np.float32).copy()
+            try:
+                mic_queue.put(arr, timeout=1.0)
+            except queue.Full:
+                pass
+    except (BrokenPipeError, ValueError, OSError):
+        pass
+    except Exception:
+        if not stop_event.is_set():
+            try:
+                mic_queue.put_nowait(("error", "Mic pipe read failed"))
+            except queue.Full:
+                pass
+
+
+def loopback_pipe_reader_thread(proc, loopback_queue, stop_event):
+    """Read float32 PCM from loopback subprocess stdout; put arrays into loopback_queue."""
+    chunk_bytes = CHUNK_SAMPLES * 4
+    try:
+        while not stop_event.is_set():
+            data = proc.stdout.read(chunk_bytes)
+            if not data:
+                break
+            if len(data) < chunk_bytes:
+                data = data + b"\x00" * (chunk_bytes - len(data))
+            arr = np.frombuffer(data, dtype=np.float32).copy()
+            try:
+                loopback_queue.put(arr, timeout=1.0)
+            except queue.Full:
+                pass
+    except (BrokenPipeError, ValueError, OSError):
+        pass
+    except Exception:
+        if not stop_event.is_set():
+            try:
+                loopback_queue.put_nowait(("error", "Loopback pipe read failed"))
+            except queue.Full:
+                pass
+
+
+def capture_worker_ffmpeg_meeting(mic_dshow_name, loopback_dshow_name, chunk_queue, stop_event, app=None):
+    """
+    Run FFmpeg to capture mic + loopback (dshow), mix with amix, output s16le 16kHz mono to pipe.
+    Requires ffmpeg on PATH. Device names from: ffmpeg -list_devices true -f dshow -i dummy
+    """
+    if not (mic_dshow_name and loopback_dshow_name):
+        try:
+            chunk_queue.put_nowait(("error", "Set ffmpeg_mic_name and ffmpeg_loopback_name in Settings."))
+        except queue.Full:
+            pass
+        return
+    cmd = [
+        "ffmpeg", "-y", "-loglevel", "error",
+        "-f", "dshow", "-i", f"audio={mic_dshow_name}",
+        "-f", "dshow", "-i", f"audio={loopback_dshow_name}",
+        "-filter_complex", "[0:a][1:a]amix=inputs=2:duration=shortest",
+        "-f", "s16le", "-ar", str(SAMPLE_RATE), "-ac", "1", "pipe:1",
+    ]
+    try:
+        proc = subprocess.Popen(cmd, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE, bufsize=0)
+    except FileNotFoundError:
+        try:
+            chunk_queue.put_nowait(("error", "FFmpeg not found. Install FFmpeg and add it to PATH."))
+        except queue.Full:
+            pass
+        return
+    except Exception as e:
+        try:
+            chunk_queue.put_nowait(("error", f"FFmpeg start failed: {e}"))
+        except queue.Full:
+            pass
+        return
+    if app is not None:
+        app.ffmpeg_process = proc
+    chunk_bytes = CHUNK_SAMPLES * 2  # s16le
+    try:
+        while not stop_event.is_set():
+            data = proc.stdout.read(chunk_bytes)
+            if not data:
+                break
+            if len(data) < chunk_bytes:
+                data = data + b"\x00" * (chunk_bytes - len(data))
+            arr = np.frombuffer(data, dtype=np.int16)
+            arr_float = (arr.astype(np.float64) / 32768.0).astype(np.float32)
+            if _is_silent(arr_float):
+                continue
+            wavfile.write(str(CHUNK_PATH), SAMPLE_RATE, arr)
+            try:
+                chunk_queue.put(str(CHUNK_PATH), timeout=1.0)
+            except queue.Full:
+                pass
+    except (BrokenPipeError, OSError):
+        pass
+    except Exception as e:
+        if not stop_event.is_set():
+            try:
+                chunk_queue.put_nowait(("error", f"FFmpeg read: {e}"))
+            except queue.Full:
+                pass
+    finally:
+        try:
+            proc.terminate()
+            proc.wait(timeout=1)
+        except Exception:
+            pass
+        if app is not None:
+            app.ffmpeg_process = None
 
 
 # -----------------------------------------------------------------------------
@@ -365,8 +878,30 @@ def start_stop(app):
     if app.running:
         app.running = False
         app.stop_event.set()
-        if app.capture_thread and app.capture_thread.is_alive():
-            app.capture_thread.join(timeout=CHUNK_DURATION_SEC + 2)
+        # Terminate FFmpeg if used
+        fp = getattr(app, "ffmpeg_process", None)
+        if fp is not None and fp.poll() is None:
+            try:
+                fp.terminate()
+                fp.wait(timeout=2)
+            except Exception:
+                pass
+            app.ffmpeg_process = None
+        # Terminate subprocesses so pipe reader threads can exit
+        for name in ("mic_subprocess", "loopback_subprocess"):
+            proc = getattr(app, name, None)
+            if proc is not None and proc.poll() is None:
+                try:
+                    proc.terminate()
+                    proc.wait(timeout=2)
+                except subprocess.TimeoutExpired:
+                    proc.kill()
+                except Exception:
+                    pass
+                setattr(app, name, None)
+        for t in getattr(app, "capture_threads", []) or ([app.capture_thread] if app.capture_thread else []):
+            if t and t.is_alive():
+                t.join(timeout=CHUNK_DURATION_SEC + 2)
         if app.transcription_thread and app.transcription_thread.is_alive():
             app.transcription_thread.join(timeout=10)
         app.start_btn.configure(state="normal")
@@ -375,27 +910,128 @@ def start_stop(app):
         return
     # Start
     app.stop_event.clear()
-    dev_idx, err = get_default_monitor_device()
-    if err or dev_idx is None:
-        app.log.insert("end", f"[No input device] {err or 'No monitor device found'}\n")
+    mode, mic_idx, loopback_idx = get_effective_audio_device(app)
+    settings = load_settings()
+
+    if mode == AUDIO_MODE_DEFAULT:
+        dev_idx, err = get_default_monitor_device()
+        if err or dev_idx is None:
+            app.log.insert("end", f"[No input device] {err or 'No monitor device found'}\n")
+            app.log.see("end")
+            return
+        app.capture_thread = threading.Thread(
+            target=capture_worker,
+            args=(dev_idx, app.chunk_queue, app.stop_event),
+            daemon=True,
+        )
+        app.capture_threads = [app.capture_thread]
+        app.status_var.set("Recording & transcribing…")
+    elif mode == AUDIO_MODE_LOOPBACK:
+        if sys.platform != "win32":
+            app.log.insert("end", "[Loopback] Only supported on Windows with pyaudiowpatch.\n")
+            app.log.see("end")
+            return
+        app.capture_thread = threading.Thread(
+            target=capture_worker_loopback,
+            args=(loopback_idx, app.chunk_queue, app.stop_event),
+            daemon=True,
+        )
+        app.capture_threads = [app.capture_thread]
+        app.status_var.set("Recording loopback & transcribing…")
+    elif mode == AUDIO_MODE_MEETING:
+        if sys.platform != "win32":
+            app.log.insert("end", "[Meeting] Mic+loopback only supported on Windows.\n")
+            app.log.see("end")
+            return
+        # DUAL SUBPROCESS: main process opens NO audio. Mic in one subprocess, loopback in another.
+        mic_device = mic_idx
+        if mic_device is None:
+            dev_idx, err = get_default_monitor_device()
+            if err or dev_idx is None:
+                app.log.insert("end", f"[Meeting] No mic device. Set 'Meeting microphone' in Settings.\n")
+                app.log.see("end")
+                return
+            mic_device = dev_idx
+        app.mic_queue = queue.Queue(maxsize=4)
+        app.loopback_queue = queue.Queue(maxsize=4)
+        app.loopback_subprocess = None
+        # Start mic subprocess
+        if getattr(sys, "frozen", False):
+            mic_cmd = [sys.executable, "--mic-capture", str(mic_device), str(SAMPLE_RATE), str(CHUNK_SAMPLES)]
+        else:
+            if not MIC_CAPTURE_SCRIPT.exists():
+                app.log.insert("end", f"[Meeting] Mic script not found: {MIC_CAPTURE_SCRIPT}\n")
+                app.log.see("end")
+                return
+            mic_cmd = [sys.executable, "-u", str(MIC_CAPTURE_SCRIPT), str(mic_device), str(SAMPLE_RATE), str(CHUNK_SAMPLES)]
+        try:
+            app.mic_subprocess = subprocess.Popen(
+                mic_cmd, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE, bufsize=0,
+            )
+        except Exception as e:
+            app.log.insert("end", f"[Meeting] Failed to start mic subprocess: {e}\n")
+            app.log.see("end")
+            return
+        # Start loopback subprocess (separate process = no shared audio with mic)
+        lb_arg = "default" if loopback_idx is None else str(loopback_idx)
+        if getattr(sys, "frozen", False):
+            lb_cmd = [sys.executable, "--loopback-capture", lb_arg, str(SAMPLE_RATE), str(CHUNK_SAMPLES)]
+        else:
+            if not LOOPBACK_CAPTURE_SCRIPT.exists():
+                app.mic_subprocess.terminate()
+                app.log.insert("end", f"[Meeting] Loopback script not found: {LOOPBACK_CAPTURE_SCRIPT}\n")
+                app.log.see("end")
+                return
+            lb_cmd = [sys.executable, "-u", str(LOOPBACK_CAPTURE_SCRIPT), lb_arg, str(SAMPLE_RATE), str(CHUNK_SAMPLES)]
+        try:
+            app.loopback_subprocess = subprocess.Popen(
+                lb_cmd, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE, bufsize=0,
+            )
+        except Exception as e:
+            app.mic_subprocess.terminate()
+            app.log.insert("end", f"[Meeting] Failed to start loopback subprocess: {e}\n")
+            app.log.see("end")
+            return
+        t_mic_reader = threading.Thread(target=mic_pipe_reader_thread, args=(app.mic_subprocess, app.mic_queue, app.stop_event), daemon=True)
+        t_lb_reader = threading.Thread(target=loopback_pipe_reader_thread, args=(app.loopback_subprocess, app.loopback_queue, app.stop_event), daemon=True)
+        t_mixer = threading.Thread(target=capture_mixer_worker, args=(app.mic_queue, app.loopback_queue, app.chunk_queue, app.stop_event), daemon=True)
+        app.capture_thread = None
+        app.capture_threads = [t_mic_reader, t_lb_reader, t_mixer]
+        for t in app.capture_threads:
+            t.start()
+        app.status_var.set("Meeting (dual subprocess: mic + loopback) — recording…")
+    elif mode == AUDIO_MODE_MEETING_FFMPEG:
+        # FFmpeg captures both sources (dshow), mixes, we read pipe — no Python audio APIs
+        mic_name = (mic_idx or "").strip() if isinstance(mic_idx, str) else None
+        lb_name = (loopback_idx or "").strip() if isinstance(loopback_idx, str) else None
+        if not mic_name or not lb_name:
+            app.log.insert("end", "[Meeting FFmpeg] Set FFmpeg mic and loopback device names in Settings. Run: ffmpeg -list_devices true -f dshow -i dummy\n")
+            app.log.see("end")
+            return
+        app.ffmpeg_process = None
+        app.capture_thread = threading.Thread(
+            target=capture_worker_ffmpeg_meeting,
+            args=(mic_name, lb_name, app.chunk_queue, app.stop_event, app),
+            daemon=True,
+        )
+        app.capture_threads = [app.capture_thread]
+        app.status_var.set("Meeting (FFmpeg) — recording…")
+    else:
+        app.log.insert("end", f"[Unknown mode] {mode}\n")
         app.log.see("end")
         return
-    app.capture_thread = threading.Thread(
-        target=capture_worker,
-        args=(dev_idx, app.chunk_queue, app.stop_event),
-        daemon=True,
-    )
+
+    if app.capture_thread:
+        app.capture_thread.start()
     app.transcription_thread = threading.Thread(
         target=transcription_worker,
         args=(app.chunk_queue, app.text_queue, app.stop_event),
         daemon=True,
     )
-    app.capture_thread.start()
     app.transcription_thread.start()
     app.running = True
     app.start_btn.configure(state="disabled")
     app.stop_btn.configure(state="normal")
-    app.status_var.set("Recording & transcribing…")
     poll_text_queue(app)
 
 
@@ -557,7 +1193,15 @@ def main():
         MONO_FONT_FAMILY = "Ubuntu Mono"
 
     root = ctk.CTk()
-    root.title("System Audio → Real-time Transcription")
+    root.title("Blue Bridge Meeting Companion")
+    # Custom icon: title bar and Windows taskbar (icon.ico in app folder)
+    _base = Path(sys.executable).parent if getattr(sys, "frozen", False) else Path(__file__).resolve().parent
+    _icon = _base / "icon.ico"
+    if _icon.exists():
+        try:
+            root.iconbitmap(str(_icon))
+        except Exception:
+            pass
     root.geometry("960x480")
     root.minsize(720, 380)
 
@@ -569,6 +1213,8 @@ def main():
     app.text_queue = queue.Queue()
     app.capture_thread = None
     app.transcription_thread = None
+    app.capture_threads = []
+    app.settings = load_settings()
 
     # Main horizontal layout: sidebar | content
     content_frame = ctk.CTkFrame(root, fg_color="transparent")
@@ -692,11 +1338,12 @@ def main():
     )
     app.stop_btn.pack(side="left")
 
-    # Tabview: Transcript | AI Prompts
+    # Tabview: Transcript | AI Prompts | Settings
     tabview = ctk.CTkTabview(main_content, fg_color=COLORS["card"], corner_radius=UI_RADIUS)
     tabview.pack(fill="both", expand=True, pady=(0, UI_PAD))
     tab_transcript = tabview.add("Transcript")
     tab_prompts = tabview.add("AI Prompts")
+    tab_settings = tabview.add("Settings")
 
     # ---- Transcript tab ----
     card = ctk.CTkFrame(tab_transcript, fg_color="transparent")
@@ -1002,16 +1649,135 @@ def main():
         command=add_new_prompt,
     ).pack(anchor="w", padx=UI_PAD_LG, pady=(4, UI_PAD))
 
-    # Footer: device info
+    # ---- Settings tab: capture mode, meeting mic, loopback device ----
+    settings_card = ctk.CTkFrame(tab_settings, fg_color="transparent")
+    settings_card.pack(fill="both", expand=True, padx=UI_PAD_LG, pady=UI_PAD)
+    ctk.CTkLabel(
+        settings_card,
+        text="Capture mode",
+        font=ctk.CTkFont(family=UI_FONT_FAMILY, size=F.header, weight="bold"),
+    ).pack(anchor="w", pady=(0, 4))
+    ctk.CTkLabel(
+        settings_card,
+        text="Meeting = dual subprocess (mic + loopback, main process opens no audio). Meeting (FFmpeg) = FFmpeg captures and mixes both (no Python audio APIs). If mic still fails, try VoiceMeeter: install VoiceMeeter, set its output as your input below.",
+        font=ctk.CTkFont(family=UI_FONT_FAMILY, size=F.small),
+        text_color="gray",
+        wraplength=520,
+    ).pack(anchor="w", pady=(0, UI_PAD))
+    mode_values = ["Default input", "Loopback (system audio)", "Meeting (mic + loopback)", "Meeting (FFmpeg)"]
+    mode_to_val = {AUDIO_MODE_DEFAULT: mode_values[0], AUDIO_MODE_LOOPBACK: mode_values[1], AUDIO_MODE_MEETING: mode_values[2], AUDIO_MODE_MEETING_FFMPEG: mode_values[3]}
+    val_to_mode = {v: k for k, v in mode_to_val.items()}
+    app.audio_mode_var = ctk.StringVar(value=mode_to_val.get(app.settings.get("audio_mode"), mode_values[0]))
+    app.audio_mode_menu = ctk.CTkOptionMenu(
+        settings_card,
+        values=mode_values,
+        variable=app.audio_mode_var,
+        width=320,
+        font=ctk.CTkFont(family=UI_FONT_FAMILY, size=F.small),
+        command=lambda v: _apply_settings(app),
+    )
+    app.audio_mode_menu.pack(anchor="w", pady=(0, UI_PAD_LG))
+
+    ctk.CTkLabel(
+        settings_card,
+        text="Meeting microphone (used when Capture mode = Meeting)",
+        font=ctk.CTkFont(family=UI_FONT_FAMILY, size=F.small, weight="bold"),
+    ).pack(anchor="w", pady=(UI_PAD, 4))
+    input_devices, _ = list_audio_devices()
+    input_options = ["System Default"]
+    input_options += [f"{d['index']}: {d['name']}" for d in input_devices if d.get("max_input_channels", 0) > 0]
+    app.meeting_mic_var = ctk.StringVar(value="System Default")
+    meeting_mic_idx = app.settings.get("meeting_mic_device")
+    if meeting_mic_idx is not None:
+        for d in input_devices:
+            if d["index"] == meeting_mic_idx:
+                app.meeting_mic_var.set(f"{d['index']}: {d['name']}")
+                break
+    app.meeting_mic_menu = ctk.CTkOptionMenu(
+        settings_card,
+        values=input_options,
+        variable=app.meeting_mic_var,
+        width=400,
+        font=ctk.CTkFont(family=UI_FONT_FAMILY, size=F.small),
+        command=lambda v: _apply_settings(app),
+    )
+    app.meeting_mic_menu.pack(anchor="w", pady=(0, UI_PAD_LG))
+
+    ctk.CTkLabel(
+        settings_card,
+        text="Loopback device (used for Loopback mode and for Meeting mode)",
+        font=ctk.CTkFont(family=UI_FONT_FAMILY, size=F.small, weight="bold"),
+    ).pack(anchor="w", pady=(UI_PAD, 4))
+    loopback_devices, lb_err = list_loopback_devices()
+    loopback_options = ["System Default"]
+    loopback_options += [f"{d['index']}: {d['name']}" for d in loopback_devices]
+    if lb_err:
+        loopback_options = ["System Default", f"(Error: {lb_err})"]
+    app.loopback_device_var = ctk.StringVar(value="System Default")
+    lb_idx = app.settings.get("loopback_device_index")
+    if lb_idx is not None and loopback_devices:
+        for d in loopback_devices:
+            if d["index"] == lb_idx:
+                app.loopback_device_var.set(f"{d['index']}: {d['name']}")
+                break
+    app.loopback_device_menu = ctk.CTkOptionMenu(
+        settings_card,
+        values=loopback_options,
+        variable=app.loopback_device_var,
+        width=400,
+        font=ctk.CTkFont(family=UI_FONT_FAMILY, size=F.small),
+        command=lambda v: _apply_settings(app),
+    )
+    app.loopback_device_menu.pack(anchor="w", pady=(0, UI_PAD))
+
+    ctk.CTkLabel(
+        settings_card,
+        text="Meeting (FFmpeg): dshow device names (run: ffmpeg -list_devices true -f dshow -i dummy)",
+        font=ctk.CTkFont(family=UI_FONT_FAMILY, size=F.small, weight="bold"),
+    ).pack(anchor="w", pady=(UI_PAD, 4))
+    app.ffmpeg_mic_var = ctk.StringVar(value=app.settings.get("ffmpeg_mic_name") or "")
+    app.ffmpeg_loopback_var = ctk.StringVar(value=app.settings.get("ffmpeg_loopback_name") or "")
+    app.ffmpeg_mic_entry = ctk.CTkEntry(settings_card, textvariable=app.ffmpeg_mic_var, width=420, placeholder_text="e.g. Microphone (Realtek)")
+    app.ffmpeg_mic_entry.pack(anchor="w", pady=(0, 4))
+    app.ffmpeg_loopback_entry = ctk.CTkEntry(settings_card, textvariable=app.ffmpeg_loopback_var, width=420, placeholder_text="e.g. Stereo Mix (Realtek) or VoiceMeeter Output")
+    app.ffmpeg_loopback_entry.pack(anchor="w", pady=(0, UI_PAD))
+    for _e in (app.ffmpeg_mic_entry, app.ffmpeg_loopback_entry):
+        _e.bind("<FocusOut>", lambda _a, _app=app: _apply_settings(_app))
+
+    def _apply_settings(app):
+        mode_str = app.audio_mode_var.get()
+        mode = val_to_mode.get(mode_str, AUDIO_MODE_DEFAULT)
+        meeting_val = app.meeting_mic_var.get()
+        meeting_idx = None
+        if meeting_val and meeting_val != "System Default" and ":" in meeting_val:
+            try:
+                meeting_idx = int(meeting_val.split(":")[0].strip())
+            except ValueError:
+                pass
+        loopback_val = app.loopback_device_var.get()
+        loopback_idx = None
+        if loopback_val and loopback_val != "System Default" and ":" in loopback_val and not loopback_val.startswith("(Error:"):
+            try:
+                loopback_idx = int(loopback_val.split(":")[0].strip())
+            except ValueError:
+                pass
+        ffmpeg_mic = (app.ffmpeg_mic_var.get() or "").strip()
+        ffmpeg_loopback = (app.ffmpeg_loopback_var.get() or "").strip()
+        app.settings = {"audio_mode": mode, "meeting_mic_device": meeting_idx, "loopback_device_index": loopback_idx, "ffmpeg_mic_name": ffmpeg_mic or None, "ffmpeg_loopback_name": ffmpeg_loopback or None}
+        save_settings(app.settings)
+
+    # Footer: device info and capture mode
+    mode = app.settings.get("audio_mode") or AUDIO_MODE_DEFAULT
+    mode_label = {"default": "Default input", "loopback": "Loopback", "meeting": "Meeting (mic + loopback)", "meeting_ffmpeg": "Meeting (FFmpeg)"}.get(mode, "Default input")
     devices, _ = list_audio_devices()
     dev_idx, dev_err = get_default_monitor_device()
     if dev_err:
-        dev_info = f"Input: (default) — {dev_err}"
+        dev_info = f"Capture: {mode_label} — {dev_err}"
     elif dev_idx is not None and devices:
         name = next((d["name"] for d in devices if d["index"] == dev_idx), f"Device {dev_idx}")
-        dev_info = f"Input: {name}"
+        dev_info = f"Capture: {mode_label} · Input: {name}"
     else:
-        dev_info = "Input: (default)"
+        dev_info = f"Capture: {mode_label}"
     ctk.CTkLabel(
         main_content,
         text=dev_info,

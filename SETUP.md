@@ -48,7 +48,14 @@ You build the app **on a Windows machine** once, then share a single zip. Collea
 **You — build on Windows (see [BUILD_WINDOWS.md](BUILD_WINDOWS.md) for full steps):**
 
 1. On Windows: open Command Prompt or PowerShell in the project folder.
-2. Run: `python -m venv .venv` → `.venv\Scripts\activate` → `pip install -r requirements.txt` → `pip install pyinstaller` → `pyinstaller meetings.spec`
+2. Run:
+```powershell
+cd path\to\meetings
+python -m venv .venv
+.venv\Scripts\python.exe -m pip install -r requirements.txt
+.venv\Scripts\python.exe -m pip install pyinstaller
+.venv\Scripts\python.exe -m pyinstaller meetings.spec
+```
 3. Zip the folder **`dist\meetings`** (e.g. `MeetingsTranscriber-Windows.zip`) and share it.
 
 **Colleagues — install and open:**

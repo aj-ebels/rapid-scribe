@@ -3,13 +3,17 @@
 # Output: dist/meetings/ (folder with meetings.exe + launcher .bat). Zip that folder and share.
 
 import sys
+from pathlib import Path
 
 block_cipher = None
 
-# Include the Windows launcher so it's inside the built folder
+# Include the Windows launcher and app icon (for window + taskbar when running from exe)
 added_datas = []
 if sys.platform == 'win32':
     added_datas = [('Run Meetings Transcriber.bat', '.')]
+    # Bundle icon.ico so the app window and taskbar show it; add icon.ico to project root first
+    if (Path(__file__).resolve().parent / 'icon.ico').exists():
+        added_datas.append(('icon.ico', '.'))
 
 a = Analysis(
     ['main.py'],
@@ -39,6 +43,8 @@ a = Analysis(
 pyz = PYZ(a.pure, a.zipped_data, cipher=block_cipher)
 
 # One-folder: exe is small, rest is in the same folder (faster startup, reliable with heavy deps)
+# Use icon.ico for the .exe file (Explorer, taskbar pin). Create icon.ico in project root.
+exe_icon = 'icon.ico' if (Path(__file__).resolve().parent / 'icon.ico').exists() else None
 exe = EXE(
     pyz,
     a.scripts,
@@ -46,6 +52,7 @@ exe = EXE(
     exclude_binaries=True,
     name='meetings',
     debug=False,
+    icon=exe_icon,
     bootloader_ignore_signals=False,
     strip=False,
     upx=True,
