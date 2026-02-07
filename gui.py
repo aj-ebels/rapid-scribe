@@ -41,6 +41,7 @@ from capture import (
     SAMPLE_RATE,
 )
 from ai_summary import generate_ai_summary
+from api_key_storage import get_openai_api_key, set_openai_api_key
 
 if sys.platform == "win32":
     from audio_mixer import AudioMixer
@@ -529,9 +530,14 @@ def main():
 
     def _do_ai_summary():
         load_dotenv()
-        api_key = os.environ.get("OPENAI_API_KEY", "").strip()
+        # Prefer environment, then key stored in app (Settings tab)
+        api_key = (os.environ.get("OPENAI_API_KEY") or "").strip() or get_openai_api_key()
         if not api_key:
-            messagebox.showerror("API key required", "Set OPENAI_API_KEY in your environment or .env file.", parent=root)
+            messagebox.showerror(
+                "API key required",
+                "Add your OpenAI API key in Settings, or set OPENAI_API_KEY in your environment.",
+                parent=root,
+            )
             return
         prompts_list = load_prompts()
         if not prompts_list:
@@ -646,6 +652,28 @@ def main():
     # Settings tab
     settings_card = ctk.CTkFrame(tab_settings, fg_color="transparent")
     settings_card.pack(fill="both", expand=True, padx=UI_PAD_LG, pady=UI_PAD)
+
+    # OpenAI API key (stored securely in user app data)
+    ctk.CTkLabel(settings_card, text="OpenAI API key", font=ctk.CTkFont(family=UI_FONT_FAMILY, size=F.header, weight="bold")).pack(anchor="w", pady=(0, 4))
+    ctk.CTkLabel(settings_card, text="Required for AI Summary. Stored on this device only; environment variable OPENAI_API_KEY overrides this if set.", font=ctk.CTkFont(family=UI_FONT_FAMILY, size=F.small), text_color="gray", wraplength=520).pack(anchor="w", pady=(0, 6))
+    api_key_row = ctk.CTkFrame(settings_card, fg_color="transparent")
+    api_key_row.pack(fill="x", pady=(0, UI_PAD_LG))
+    app.openai_key_var = ctk.StringVar(value="")  # Never show stored key in plain text; placeholder only
+    app.openai_key_entry = ctk.CTkEntry(api_key_row, width=400, height=32, font=ctk.CTkFont(family=UI_FONT_FAMILY, size=F.small), show="•", placeholder_text="Enter key to save, or leave blank to keep existing")
+    app.openai_key_entry.pack(side="left", padx=(0, UI_PAD))
+    def _save_openai_key():
+        key = app.openai_key_entry.get().strip()
+        if set_openai_api_key(key):
+            app.openai_key_entry.delete(0, "end")
+            app.openai_key_entry.configure(placeholder_text="Saved. Key is stored on this device only.")
+        else:
+            messagebox.showerror("Save failed", "Could not save API key. Check write access to app data folder.", parent=root)
+    ctk.CTkButton(api_key_row, text="Save key", font=ctk.CTkFont(family=UI_FONT_FAMILY, size=F.small), width=100, height=32, corner_radius=UI_RADIUS, fg_color=COLORS["primary_fg"], hover_color=COLORS["primary_hover"], command=_save_openai_key).pack(side="left")
+    if get_openai_api_key():
+        ctk.CTkLabel(settings_card, text="A key is already saved. Enter a new key and click Save key to replace it.", font=ctk.CTkFont(family=UI_FONT_FAMILY, size=F.tiny), text_color="gray", wraplength=520).pack(anchor="w", pady=(0, UI_PAD_LG))
+    else:
+        ctk.CTkLabel(settings_card, text="No key saved yet. Get an API key from platform.openai.com and paste it above.", font=ctk.CTkFont(family=UI_FONT_FAMILY, size=F.tiny), text_color="gray", wraplength=520).pack(anchor="w", pady=(0, UI_PAD_LG))
+
     ctk.CTkLabel(settings_card, text="Capture mode", font=ctk.CTkFont(family=UI_FONT_FAMILY, size=F.header, weight="bold")).pack(anchor="w", pady=(0, 4))
     ctk.CTkLabel(settings_card, text="Meeting = in-process mic + loopback (PyAudioWPatch; loopback read only when data available). Loopback device below applies to Meeting mode.", font=ctk.CTkFont(family=UI_FONT_FAMILY, size=F.small), text_color="gray", wraplength=520).pack(anchor="w", pady=(0, UI_PAD))
     mode_values = ["Default input", "Loopback (system audio)", "Meeting (mic + loopback)"]
