@@ -2,5 +2,6 @@
   "audio_mode": "meeting",
   "meeting_mic_device": null,
   "loopback_device_index": null,
-  "transcription_model": "istupakov/parakeet-tdt-0.6b-v2-onnx"
+  "transcription_model": "istupakov/parakeet-tdt-0.6b-v2-onnx",
+  "chunk_duration_sec": 5.0
 }
