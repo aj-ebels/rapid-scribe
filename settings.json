@@ -1,5 +1,5 @@
 {
-  "audio_mode": "meeting_ffmpeg",
+  "audio_mode": "meeting",
   "meeting_mic_device": null,
   "loopback_device_index": null,
   "ffmpeg_mic_name": null,

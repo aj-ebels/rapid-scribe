@@ -3,3 +3,4 @@ build/
 dist/
 prompts.json
 .env
+__pycache__/

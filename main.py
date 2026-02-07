@@ -119,6 +119,11 @@ import sounddevice as sd
 from scipy.io import wavfile
 from scipy.signal import resample
 import customtkinter as ctk
+
+# In-process mic+loopback (Meeting mode on Windows)
+if sys.platform == "win32":
+    from audio_mixer import AudioMixer
+    from chunk_recorder import ChunkRecorder
 from tkinter import messagebox, filedialog
 
 # Lazy load Parakeet via onnx-asr (same stack as Meetily: istupakov ONNX Parakeet)
@@ -339,6 +344,10 @@ SAMPLE_RATE = 16000
 CHANNELS = 1
 CHUNK_DURATION_SEC = 5.0
 CHUNK_SAMPLES = int(SAMPLE_RATE * CHUNK_DURATION_SEC)
+# In-process Meeting (mic+loopback): capture at 48k to avoid WASAPI issues, then resample to 16k for ASR
+CAPTURE_SAMPLE_RATE_MEETING = 48000
+FRAMES_PER_READ_MEETING = 4096
+MIXER_GAIN_MEETING = 0.7
 # Use OS temp dir so it works on Windows (no /tmp) and Linux/WSL
 CHUNK_PATH = Path(tempfile.gettempdir()) / "meetings_chunk.wav"
 
@@ -567,6 +576,14 @@ def capture_worker_loopback_for_meeting(loopback_device_index, out_queue, stop_e
                 out_queue.put(("error", "Loopback failed"))
             except queue.Full:
                 pass
+
+
+def _meeting_chunk_ready(app, wav_path: str):
+    """Callback from ChunkRecorder (in-process Meeting mode): queue WAV path for transcription."""
+    try:
+        app.chunk_queue.put_nowait(wav_path)
+    except queue.Full:
+        pass
 
 
 def capture_mixer_worker(mic_queue, loopback_queue, chunk_queue, stop_event):
@@ -887,7 +904,20 @@ def start_stop(app):
             except Exception:
                 pass
             app.ffmpeg_process = None
-        # Terminate subprocesses so pipe reader threads can exit
+        # In-process Meeting: stop mixer and flush recorder
+        if getattr(app, "mixer", None) is not None:
+            try:
+                app.mixer.stop()
+            except Exception:
+                pass
+            app.mixer = None
+        if getattr(app, "recorder", None) is not None:
+            try:
+                app.recorder.flush()
+            except Exception:
+                pass
+            app.recorder = None
+        # Terminate subprocesses so pipe reader threads can exit (used only for legacy/other modes)
         for name in ("mic_subprocess", "loopback_subprocess"):
             proc = getattr(app, name, None)
             if proc is not None and proc.poll() is None:
@@ -943,63 +973,36 @@ def start_stop(app):
             app.log.insert("end", "[Meeting] Mic+loopback only supported on Windows.\n")
             app.log.see("end")
             return
-        # DUAL SUBPROCESS: main process opens NO audio. Mic in one subprocess, loopback in another.
-        mic_device = mic_idx
-        if mic_device is None:
-            dev_idx, err = get_default_monitor_device()
-            if err or dev_idx is None:
-                app.log.insert("end", f"[Meeting] No mic device. Set 'Meeting microphone' in Settings.\n")
-                app.log.see("end")
-                return
-            mic_device = dev_idx
-        app.mic_queue = queue.Queue(maxsize=4)
-        app.loopback_queue = queue.Queue(maxsize=4)
-        app.loopback_subprocess = None
-        # Start mic subprocess
-        if getattr(sys, "frozen", False):
-            mic_cmd = [sys.executable, "--mic-capture", str(mic_device), str(SAMPLE_RATE), str(CHUNK_SAMPLES)]
-        else:
-            if not MIC_CAPTURE_SCRIPT.exists():
-                app.log.insert("end", f"[Meeting] Mic script not found: {MIC_CAPTURE_SCRIPT}\n")
-                app.log.see("end")
-                return
-            mic_cmd = [sys.executable, "-u", str(MIC_CAPTURE_SCRIPT), str(mic_device), str(SAMPLE_RATE), str(CHUNK_SAMPLES)]
+        # In-process: single PyAudioWPatch thread, mic blocking + loopback non-blocking (get_read_available)
         try:
-            app.mic_subprocess = subprocess.Popen(
-                mic_cmd, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE, bufsize=0,
+            app.recorder = ChunkRecorder(
+                sample_rate=CAPTURE_SAMPLE_RATE_MEETING,
+                chunk_duration_sec=CHUNK_DURATION_SEC,
+                asr_sample_rate=SAMPLE_RATE,
+                on_chunk_ready=lambda wav_path: _meeting_chunk_ready(app, wav_path),
             )
-        except Exception as e:
-            app.log.insert("end", f"[Meeting] Failed to start mic subprocess: {e}\n")
-            app.log.see("end")
-            return
-        # Start loopback subprocess (separate process = no shared audio with mic)
-        lb_arg = "default" if loopback_idx is None else str(loopback_idx)
-        if getattr(sys, "frozen", False):
-            lb_cmd = [sys.executable, "--loopback-capture", lb_arg, str(SAMPLE_RATE), str(CHUNK_SAMPLES)]
-        else:
-            if not LOOPBACK_CAPTURE_SCRIPT.exists():
-                app.mic_subprocess.terminate()
-                app.log.insert("end", f"[Meeting] Loopback script not found: {LOOPBACK_CAPTURE_SCRIPT}\n")
-                app.log.see("end")
-                return
-            lb_cmd = [sys.executable, "-u", str(LOOPBACK_CAPTURE_SCRIPT), lb_arg, str(SAMPLE_RATE), str(CHUNK_SAMPLES)]
-        try:
-            app.loopback_subprocess = subprocess.Popen(
-                lb_cmd, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE, bufsize=0,
+            app.mixer = AudioMixer(
+                sample_rate=CAPTURE_SAMPLE_RATE_MEETING,
+                frames_per_read=FRAMES_PER_READ_MEETING,
+                gain=MIXER_GAIN_MEETING,
             )
+            app.mixer.set_stereo_callback(app.recorder.push_stereo)
+            # Use default mic (PyAudio index); loopback_idx is from list_loopback_devices (PyAudio)
+            app.mixer.start(loopback_device_index=loopback_idx, mic_device_index=None)
+            app.capture_thread = None
+            app.capture_threads = []
+            app.status_var.set("Meeting (mic + loopback) — recording…")
         except Exception as e:
-            app.mic_subprocess.terminate()
-            app.log.insert("end", f"[Meeting] Failed to start loopback subprocess: {e}\n")
+            app.log.insert("end", f"[Meeting] Start failed: {e}\n")
             app.log.see("end")
+            if getattr(app, "mixer", None) is not None:
+                try:
+                    app.mixer.stop()
+                except Exception:
+                    pass
+                app.mixer = None
+            app.recorder = None
             return
-        t_mic_reader = threading.Thread(target=mic_pipe_reader_thread, args=(app.mic_subprocess, app.mic_queue, app.stop_event), daemon=True)
-        t_lb_reader = threading.Thread(target=loopback_pipe_reader_thread, args=(app.loopback_subprocess, app.loopback_queue, app.stop_event), daemon=True)
-        t_mixer = threading.Thread(target=capture_mixer_worker, args=(app.mic_queue, app.loopback_queue, app.chunk_queue, app.stop_event), daemon=True)
-        app.capture_thread = None
-        app.capture_threads = [t_mic_reader, t_lb_reader, t_mixer]
-        for t in app.capture_threads:
-            t.start()
-        app.status_var.set("Meeting (dual subprocess: mic + loopback) — recording…")
     elif mode == AUDIO_MODE_MEETING_FFMPEG:
         # FFmpeg captures both sources (dshow), mixes, we read pipe — no Python audio APIs
         mic_name = (mic_idx or "").strip() if isinstance(mic_idx, str) else None
@@ -1659,7 +1662,7 @@ def main():
     ).pack(anchor="w", pady=(0, 4))
     ctk.CTkLabel(
         settings_card,
-        text="Meeting = dual subprocess (mic + loopback, main process opens no audio). Meeting (FFmpeg) = FFmpeg captures and mixes both (no Python audio APIs). If mic still fails, try VoiceMeeter: install VoiceMeeter, set its output as your input below.",
+        text="Meeting = in-process mic + loopback (single PyAudioWPatch thread; loopback read only when data available). Meeting (FFmpeg) = FFmpeg captures and mixes both. Loopback device below applies to Meeting mode.",
         font=ctk.CTkFont(family=UI_FONT_FAMILY, size=F.small),
         text_color="gray",
         wraplength=520,
