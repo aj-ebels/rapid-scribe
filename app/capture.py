@@ -8,11 +8,7 @@ from pathlib import Path
 
 import numpy as np
 
-try:
-    from diagnostic import write as diag
-except ImportError:
-    def diag(*parts, **kwargs):
-        pass
+from .diagnostic import write as diag
 import sounddevice as sd
 from scipy.io import wavfile
 from scipy.signal import resample

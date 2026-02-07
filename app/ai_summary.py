@@ -1,7 +1,7 @@
 """
 AI summary: OpenAI API call with prompt template and transcript.
 """
-from prompts import TRANSCRIPT_PLACEHOLDER
+from .prompts import TRANSCRIPT_PLACEHOLDER
 
 
 def generate_ai_summary(api_key, prompt_template, transcript):

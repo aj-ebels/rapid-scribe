@@ -7,7 +7,8 @@ import os
 import sys
 from pathlib import Path
 
-_BASE = Path(__file__).resolve().parent
+# Project root (parent of app/) for settings.json in dev
+_BASE = Path(__file__).resolve().parent.parent
 
 
 def _get_settings_path():

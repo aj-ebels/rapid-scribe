@@ -4,7 +4,7 @@ Audio device listing and resolution: sounddevice inputs, WASAPI loopback, effect
 import sys
 import sounddevice as sd
 
-from settings import (
+from .settings import (
     load_settings,
     AUDIO_MODE_DEFAULT,
     AUDIO_MODE_LOOPBACK,

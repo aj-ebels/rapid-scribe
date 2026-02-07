@@ -4,13 +4,8 @@ Transcription: Parakeet/ONNX ASR model loading, cache, installed-models list, tr
 import queue
 from pathlib import Path
 
-from settings import DEFAULT_TRANSCRIPTION_MODEL
-
-try:
-    from diagnostic import write as diag
-except ImportError:
-    def diag(*parts, **kwargs):
-        pass
+from .settings import DEFAULT_TRANSCRIPTION_MODEL
+from .diagnostic import write as diag
 
 # Single default: used for dropdown default and for "Install model" (recommended model).
 PARAKEET_MODEL = DEFAULT_TRANSCRIPTION_MODEL

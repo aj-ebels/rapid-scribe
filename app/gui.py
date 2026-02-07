@@ -10,10 +10,10 @@ from pathlib import Path
 import customtkinter as ctk
 from tkinter import messagebox, filedialog
 
-from settings import load_settings, save_settings, AUDIO_MODE_DEFAULT, AUDIO_MODE_LOOPBACK, AUDIO_MODE_MEETING
-from devices import list_audio_devices, list_loopback_devices, get_default_monitor_device, get_effective_audio_device
-from prompts import load_prompts, add_prompt, update_prompt, delete_prompt, get_prompt_by_id, TRANSCRIPT_PLACEHOLDER
-from transcription import (
+from .settings import load_settings, save_settings, AUDIO_MODE_DEFAULT, AUDIO_MODE_LOOPBACK, AUDIO_MODE_MEETING
+from .devices import list_audio_devices, list_loopback_devices, get_default_monitor_device, get_effective_audio_device
+from .prompts import load_prompts, add_prompt, update_prompt, delete_prompt, get_prompt_by_id, TRANSCRIPT_PLACEHOLDER
+from .transcription import (
     PARAKEET_MODEL,
     STANDARD_TRANSCRIPTION_MODEL,
     get_transcription_model,
@@ -23,7 +23,7 @@ from transcription import (
     download_transcription_model,
     transcription_worker,
 )
-from capture import (
+from .capture import (
     capture_worker,
     capture_worker_loopback,
     meeting_chunk_ready,
@@ -33,13 +33,13 @@ from capture import (
     MIXER_GAIN_MEETING,
     SAMPLE_RATE,
 )
-from ai_summary import generate_ai_summary
-from api_key_storage import get_openai_api_key, set_openai_api_key, clear_openai_api_key
-from diagnostic import write as diag
+from .ai_summary import generate_ai_summary
+from .api_key_storage import get_openai_api_key, set_openai_api_key, clear_openai_api_key
+from .diagnostic import write as diag
 
 if sys.platform == "win32":
-    from audio_mixer import AudioMixer
-    from chunk_recorder import ChunkRecorder
+    from .audio_mixer import AudioMixer
+    from .chunk_recorder import ChunkRecorder
 
 
 def poll_text_queue(app):
@@ -288,7 +288,7 @@ def main():
     if getattr(sys, "frozen", False):
         _base = Path(getattr(sys, "_MEIPASS", Path(sys.executable).parent))
     else:
-        _base = Path(__file__).resolve().parent
+        _base = Path(__file__).resolve().parent.parent  # project root (themes/, icon.ico)
     theme_path = _base / "themes" / "meetings-dark.json"
     if theme_path.exists():
         ctk.set_default_color_theme(str(theme_path))

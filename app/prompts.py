@@ -9,7 +9,8 @@ import sys
 import uuid
 from pathlib import Path
 
-_BASE = Path(__file__).resolve().parent
+# Project root (parent of app/) for prompts.json in dev
+_BASE = Path(__file__).resolve().parent.parent
 TRANSCRIPT_PLACEHOLDER = "{{transcript}}"
 
 
