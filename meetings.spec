@@ -9,6 +9,7 @@ import os
 SPEC_DIR = os.path.dirname(os.path.abspath(SPEC))
 datas = [
     (os.path.join(SPEC_DIR, "themes"), "themes"),
+    (os.path.join(SPEC_DIR, "assets", "icons"), "assets/icons"),
     (os.path.join(SPEC_DIR, "icon.ico"), "."),
 ]
 # Bundle prompts.json if it exists (default prompts for first run)
