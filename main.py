@@ -229,7 +229,6 @@ SETTINGS_FILE = Path(__file__).resolve().parent / "settings.json"
 MIC_CAPTURE_SCRIPT = Path(__file__).resolve().parent / "mic_capture_subprocess.py"
 LOOPBACK_CAPTURE_SCRIPT = Path(__file__).resolve().parent / "loopback_capture_subprocess.py"
 AUDIO_MODE_DEFAULT = "default"
-AUDIO_MODE_MEETING_FFMPEG = "meeting_ffmpeg"
 AUDIO_MODE_LOOPBACK = "loopback"
 AUDIO_MODE_MEETING = "meeting"
 
@@ -237,7 +236,7 @@ AUDIO_MODE_MEETING = "meeting"
 def load_settings():
     """Load settings from JSON. Returns dict with audio_mode, meeting_mic_device, loopback_device_index, transcription_model."""
     out = {"audio_mode": AUDIO_MODE_DEFAULT, "meeting_mic_device": None, "loopback_device_index": None,
-           "ffmpeg_mic_name": None, "ffmpeg_loopback_name": None, "transcription_model": PARAKEET_MODEL}
+           "transcription_model": PARAKEET_MODEL}
     if not SETTINGS_FILE.exists():
         return out
     try:
@@ -247,8 +246,6 @@ def load_settings():
             out["audio_mode"] = data.get("audio_mode", out["audio_mode"])
             out["meeting_mic_device"] = data.get("meeting_mic_device")
             out["loopback_device_index"] = data.get("loopback_device_index")
-            out["ffmpeg_mic_name"] = data.get("ffmpeg_mic_name")
-            out["ffmpeg_loopback_name"] = data.get("ffmpeg_loopback_name")
             out["transcription_model"] = data.get("transcription_model", PARAKEET_MODEL) or PARAKEET_MODEL
     except Exception:
         pass
@@ -344,10 +341,8 @@ def get_effective_audio_device(app):
     if mode == AUDIO_MODE_LOOPBACK:
         loopback_idx = settings.get("loopback_device_index")
         return (AUDIO_MODE_LOOPBACK, None, loopback_idx)
-    if mode == AUDIO_MODE_MEETING:
+    if mode == AUDIO_MODE_MEETING or mode == "meeting_ffmpeg":
         return (AUDIO_MODE_MEETING, settings.get("meeting_mic_device"), settings.get("loopback_device_index"))
-    if mode == AUDIO_MODE_MEETING_FFMPEG:
-        return (AUDIO_MODE_MEETING_FFMPEG, settings.get("ffmpeg_mic_name"), settings.get("ffmpeg_loopback_name"))
     return (AUDIO_MODE_DEFAULT, None, None)
 
 
@@ -695,75 +690,6 @@ def loopback_pipe_reader_thread(proc, loopback_queue, stop_event):
                 pass
 
 
-def capture_worker_ffmpeg_meeting(mic_dshow_name, loopback_dshow_name, chunk_queue, stop_event, app=None):
-    """
-    Run FFmpeg to capture mic + loopback (dshow), mix with amix, output s16le 16kHz mono to pipe.
-    Requires ffmpeg on PATH. Device names from: ffmpeg -list_devices true -f dshow -i dummy
-    """
-    if not (mic_dshow_name and loopback_dshow_name):
-        try:
-            chunk_queue.put_nowait(("error", "Set ffmpeg_mic_name and ffmpeg_loopback_name in Settings."))
-        except queue.Full:
-            pass
-        return
-    cmd = [
-        "ffmpeg", "-y", "-loglevel", "error",
-        "-f", "dshow", "-i", f"audio={mic_dshow_name}",
-        "-f", "dshow", "-i", f"audio={loopback_dshow_name}",
-        "-filter_complex", "[0:a][1:a]amix=inputs=2:duration=shortest",
-        "-f", "s16le", "-ar", str(SAMPLE_RATE), "-ac", "1", "pipe:1",
-    ]
-    try:
-        proc = subprocess.Popen(cmd, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE, bufsize=0)
-    except FileNotFoundError:
-        try:
-            chunk_queue.put_nowait(("error", "FFmpeg not found. Install FFmpeg and add it to PATH."))
-        except queue.Full:
-            pass
-        return
-    except Exception as e:
-        try:
-            chunk_queue.put_nowait(("error", f"FFmpeg start failed: {e}"))
-        except queue.Full:
-            pass
-        return
-    if app is not None:
-        app.ffmpeg_process = proc
-    chunk_bytes = CHUNK_SAMPLES * 2  # s16le
-    try:
-        while not stop_event.is_set():
-            data = proc.stdout.read(chunk_bytes)
-            if not data:
-                break
-            if len(data) < chunk_bytes:
-                data = data + b"\x00" * (chunk_bytes - len(data))
-            arr = np.frombuffer(data, dtype=np.int16)
-            arr_float = (arr.astype(np.float64) / 32768.0).astype(np.float32)
-            if _is_silent(arr_float):
-                continue
-            wavfile.write(str(CHUNK_PATH), SAMPLE_RATE, arr)
-            try:
-                chunk_queue.put(str(CHUNK_PATH), timeout=1.0)
-            except queue.Full:
-                pass
-    except (BrokenPipeError, OSError):
-        pass
-    except Exception as e:
-        if not stop_event.is_set():
-            try:
-                chunk_queue.put_nowait(("error", f"FFmpeg read: {e}"))
-            except queue.Full:
-                pass
-    finally:
-        try:
-            proc.terminate()
-            proc.wait(timeout=1)
-        except Exception:
-            pass
-        if app is not None:
-            app.ffmpeg_process = None
-
-
 # -----------------------------------------------------------------------------
 # Transcription thread
 # -----------------------------------------------------------------------------
@@ -910,15 +836,6 @@ def start_stop(app):
     if app.running:
         app.running = False
         app.stop_event.set()
-        # Terminate FFmpeg if used
-        fp = getattr(app, "ffmpeg_process", None)
-        if fp is not None and fp.poll() is None:
-            try:
-                fp.terminate()
-                fp.wait(timeout=2)
-            except Exception:
-                pass
-            app.ffmpeg_process = None
         # In-process Meeting: stop mixer and flush recorder
         if getattr(app, "mixer", None) is not None:
             try:
@@ -1018,22 +935,6 @@ def start_stop(app):
                 app.mixer = None
             app.recorder = None
             return
-    elif mode == AUDIO_MODE_MEETING_FFMPEG:
-        # FFmpeg captures both sources (dshow), mixes, we read pipe — no Python audio APIs
-        mic_name = (mic_idx or "").strip() if isinstance(mic_idx, str) else None
-        lb_name = (loopback_idx or "").strip() if isinstance(loopback_idx, str) else None
-        if not mic_name or not lb_name:
-            app.log.insert("end", "[Meeting FFmpeg] Set FFmpeg mic and loopback device names in Settings. Run: ffmpeg -list_devices true -f dshow -i dummy\n")
-            app.log.see("end")
-            return
-        app.ffmpeg_process = None
-        app.capture_thread = threading.Thread(
-            target=capture_worker_ffmpeg_meeting,
-            args=(mic_name, lb_name, app.chunk_queue, app.stop_event, app),
-            daemon=True,
-        )
-        app.capture_threads = [app.capture_thread]
-        app.status_var.set("Meeting (FFmpeg) — recording…")
     else:
         app.log.insert("end", f"[Unknown mode] {mode}\n")
         app.log.see("end")
@@ -1714,15 +1615,15 @@ def main():
     ).pack(anchor="w", pady=(0, 4))
     ctk.CTkLabel(
         settings_card,
-        text="Meeting = in-process mic + loopback (single PyAudioWPatch thread; loopback read only when data available). Meeting (FFmpeg) = FFmpeg captures and mixes both. Loopback device below applies to Meeting mode.",
+        text="Meeting = in-process mic + loopback (PyAudioWPatch; loopback read only when data available). Loopback device below applies to Meeting mode.",
         font=ctk.CTkFont(family=UI_FONT_FAMILY, size=F.small),
         text_color="gray",
         wraplength=520,
     ).pack(anchor="w", pady=(0, UI_PAD))
-    mode_values = ["Default input", "Loopback (system audio)", "Meeting (mic + loopback)", "Meeting (FFmpeg)"]
-    mode_to_val = {AUDIO_MODE_DEFAULT: mode_values[0], AUDIO_MODE_LOOPBACK: mode_values[1], AUDIO_MODE_MEETING: mode_values[2], AUDIO_MODE_MEETING_FFMPEG: mode_values[3]}
+    mode_values = ["Default input", "Loopback (system audio)", "Meeting (mic + loopback)"]
+    mode_to_val = {AUDIO_MODE_DEFAULT: mode_values[0], AUDIO_MODE_LOOPBACK: mode_values[1], AUDIO_MODE_MEETING: mode_values[2]}
     val_to_mode = {v: k for k, v in mode_to_val.items()}
-    app.audio_mode_var = ctk.StringVar(value=mode_to_val.get(app.settings.get("audio_mode"), mode_values[0]))
+    app.audio_mode_var = ctk.StringVar(value=mode_to_val.get(app.settings.get("audio_mode")) or ("Meeting (mic + loopback)" if app.settings.get("audio_mode") == "meeting_ffmpeg" else mode_values[0]))
     app.audio_mode_menu = ctk.CTkOptionMenu(
         settings_card,
         values=mode_values,
@@ -1785,20 +1686,6 @@ def main():
     )
     app.loopback_device_menu.pack(anchor="w", pady=(0, UI_PAD))
 
-    ctk.CTkLabel(
-        settings_card,
-        text="Meeting (FFmpeg): dshow device names (run: ffmpeg -list_devices true -f dshow -i dummy)",
-        font=ctk.CTkFont(family=UI_FONT_FAMILY, size=F.small, weight="bold"),
-    ).pack(anchor="w", pady=(UI_PAD, 4))
-    app.ffmpeg_mic_var = ctk.StringVar(value=app.settings.get("ffmpeg_mic_name") or "")
-    app.ffmpeg_loopback_var = ctk.StringVar(value=app.settings.get("ffmpeg_loopback_name") or "")
-    app.ffmpeg_mic_entry = ctk.CTkEntry(settings_card, textvariable=app.ffmpeg_mic_var, width=420, placeholder_text="e.g. Microphone (Realtek)")
-    app.ffmpeg_mic_entry.pack(anchor="w", pady=(0, 4))
-    app.ffmpeg_loopback_entry = ctk.CTkEntry(settings_card, textvariable=app.ffmpeg_loopback_var, width=420, placeholder_text="e.g. Stereo Mix (Realtek) or VoiceMeeter Output")
-    app.ffmpeg_loopback_entry.pack(anchor="w", pady=(0, UI_PAD))
-    for _e in (app.ffmpeg_mic_entry, app.ffmpeg_loopback_entry):
-        _e.bind("<FocusOut>", lambda _a, _app=app: _apply_settings(_app))
-
     def _apply_settings(app):
         mode_str = app.audio_mode_var.get()
         mode = val_to_mode.get(mode_str, AUDIO_MODE_DEFAULT)
@@ -1816,14 +1703,12 @@ def main():
                 loopback_idx = int(loopback_val.split(":")[0].strip())
             except ValueError:
                 pass
-        ffmpeg_mic = (app.ffmpeg_mic_var.get() or "").strip()
-        ffmpeg_loopback = (app.ffmpeg_loopback_var.get() or "").strip()
-        app.settings = {"audio_mode": mode, "meeting_mic_device": meeting_idx, "loopback_device_index": loopback_idx, "ffmpeg_mic_name": ffmpeg_mic or None, "ffmpeg_loopback_name": ffmpeg_loopback or None}
+        app.settings = {**app.settings, "audio_mode": mode, "meeting_mic_device": meeting_idx, "loopback_device_index": loopback_idx}
         save_settings(app.settings)
 
     # Footer: device info and capture mode
     mode = app.settings.get("audio_mode") or AUDIO_MODE_DEFAULT
-    mode_label = {"default": "Default input", "loopback": "Loopback", "meeting": "Meeting (mic + loopback)", "meeting_ffmpeg": "Meeting (FFmpeg)"}.get(mode, "Default input")
+    mode_label = {"default": "Default input", "loopback": "Loopback", "meeting": "Meeting (mic + loopback)", "meeting_ffmpeg": "Meeting (mic + loopback)"}.get(mode, "Default input")
     devices, _ = list_audio_devices()
     dev_idx, dev_err = get_default_monitor_device()
     if dev_err:
