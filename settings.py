@@ -19,7 +19,7 @@ def load_settings(default_model=None):
     """Load settings from JSON. Returns dict with audio_mode, meeting_mic_device, loopback_device_index, transcription_model."""
     model = default_model or DEFAULT_TRANSCRIPTION_MODEL
     out = {
-        "audio_mode": AUDIO_MODE_DEFAULT,
+        "audio_mode": AUDIO_MODE_MEETING,
         "meeting_mic_device": None,
         "loopback_device_index": None,
         "transcription_model": model,
