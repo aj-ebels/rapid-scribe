@@ -342,6 +342,7 @@ def main():
         "secondary_hover": ("gray60", "gray45"),
         "textbox_bg": ("gray97", "gray14"),
         "error_text": ("red", "#f7768e"),
+        "prompt_item_bg": ("gray90", "gray22"),
     }
     if sys.platform == "win32":
         UI_FONT_FAMILY = "Segoe UI"
@@ -674,7 +675,7 @@ def main():
     ctk.CTkButton(export_row, text="Export", font=ctk.CTkFont(family=UI_FONT_FAMILY, size=F.small), width=80, height=28, corner_radius=UI_RADIUS, fg_color=COLORS["secondary_fg"], hover_color=COLORS["secondary_hover"], command=_export_markdown).pack(side="left", padx=(0, 0), pady=4)
 
     # AI Prompts tab
-    ctk.CTkLabel(tab_prompts, text=f"Custom prompt templates for AI Summary. Use {TRANSCRIPT_PLACEHOLDER} where the transcript should be inserted.", font=ctk.CTkFont(family=UI_FONT_FAMILY, size=F.small), text_color="gray", wraplength=500).pack(anchor="w", padx=UI_PAD_LG, pady=(UI_PAD, 4))
+    ctk.CTkLabel(tab_prompts, text=f"Custom prompt templates for AI Summary. Use {TRANSCRIPT_PLACEHOLDER} where the transcript should be inserted.", font=ctk.CTkFont(family=UI_FONT_FAMILY, size=F.small), text_color="gray", wraplength=1000).pack(anchor="w", padx=UI_PAD_LG, pady=(UI_PAD, 4))
     prompts_scroll = ctk.CTkScrollableFrame(tab_prompts, fg_color="transparent")
     prompts_scroll.pack(fill="both", expand=True, padx=UI_PAD_LG, pady=UI_PAD)
 
@@ -686,9 +687,9 @@ def main():
         if not prompts_list:
             ctk.CTkLabel(prompts_scroll, text="No prompts yet. Click 'Add prompt' to create one.", font=ctk.CTkFont(family=UI_FONT_FAMILY, size=F.small), text_color="gray").pack(anchor="w", padx=UI_PAD, pady=8)
         for p in prompts_list:
-            row = ctk.CTkFrame(prompts_scroll, fg_color="transparent")
-            row.pack(fill="x", pady=4)
-            ctk.CTkLabel(row, text=p.get("name", "Unnamed"), font=ctk.CTkFont(family=UI_FONT_FAMILY, size=F.body, weight="bold"), anchor="w").pack(side="left", padx=(UI_PAD, 8))
+            row = ctk.CTkFrame(prompts_scroll, fg_color=COLORS["prompt_item_bg"], corner_radius=UI_RADIUS)
+            row.pack(fill="x", pady=6)
+            ctk.CTkLabel(row, text=p.get("name", "Unnamed"), font=ctk.CTkFont(family=UI_FONT_FAMILY, size=F.body, weight="bold"), anchor="w").pack(side="left", padx=(UI_PAD_LG, 8), pady=UI_PAD)
             def _edit(pid=p["id"]):
                 _open_edit_prompt_dialog(root, pid, refresh_prompts_list, UI_PAD, UI_RADIUS, UI_FONT_FAMILY, F, COLORS)
             def _delete(pid=p["id"], pname=p.get("name", "?")):
@@ -697,8 +698,8 @@ def main():
                 if delete_prompt(pid):
                     refresh_prompts_list()
                     messagebox.showinfo("Deleted", "Prompt deleted.")
-            ctk.CTkButton(row, text="Edit", width=60, height=28, font=ctk.CTkFont(family=UI_FONT_FAMILY, size=F.tiny), corner_radius=UI_RADIUS, fg_color=COLORS["secondary_fg"], hover_color=COLORS["secondary_hover"], command=_edit).pack(side="right", padx=4)
-            ctk.CTkButton(row, text="Delete", width=60, height=28, font=ctk.CTkFont(family=UI_FONT_FAMILY, size=F.tiny), corner_radius=UI_RADIUS, fg_color=COLORS["danger_fg"], hover_color=COLORS["danger_hover"], command=_delete).pack(side="right", padx=(0, UI_PAD))
+            ctk.CTkButton(row, text="Edit", width=60, height=28, font=ctk.CTkFont(family=UI_FONT_FAMILY, size=F.tiny), corner_radius=UI_RADIUS, fg_color=COLORS["secondary_fg"], hover_color=COLORS["secondary_hover"], command=_edit).pack(side="right", padx=4, pady=UI_PAD)
+            ctk.CTkButton(row, text="Delete", width=60, height=28, font=ctk.CTkFont(family=UI_FONT_FAMILY, size=F.tiny), corner_radius=UI_RADIUS, fg_color=COLORS["danger_fg"], hover_color=COLORS["danger_hover"], command=_delete).pack(side="right", padx=(0, UI_PAD_LG), pady=UI_PAD)
 
     def add_new_prompt():
         _open_edit_prompt_dialog(root, None, refresh_prompts_list, UI_PAD, UI_RADIUS, UI_FONT_FAMILY, F, COLORS)
