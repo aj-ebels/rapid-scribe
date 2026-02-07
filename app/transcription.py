@@ -22,6 +22,19 @@ ASR_REPO_PATTERNS = (
     "conformer", "transcribe",
 )
 
+# Repos that host both int8 and full-precision files; we only download int8 + metadata (~660 MB vs ~3 GB).
+INT8_ONLY_REPOS = frozenset({
+    "istupakov/parakeet-tdt-0.6b-v2-onnx",
+    "istupakov/parakeet-tdt-0.6b-v3-onnx",
+})
+# Glob patterns for int8-only download: int8 ONNX files plus config/vocab/preprocessor.
+INT8_ONLY_ALLOW_PATTERNS = [
+    "*int8*.onnx",
+    "config.json",
+    "vocab.txt",
+    "nemo128.onnx",
+]
+
 
 def _format_size(num_bytes):
     if num_bytes < 1024:
@@ -109,7 +122,10 @@ def download_transcription_model(model_id, progress_queue=None):
 
                 from huggingface_hub import snapshot_download
 
-                snapshot_download(repo_id=model_id, tqdm_class=make_progress_tqdm_class(progress_queue))
+                download_kwargs = {"repo_id": model_id, "tqdm_class": make_progress_tqdm_class(progress_queue)}
+                if model_id in INT8_ONLY_REPOS:
+                    download_kwargs["allow_patterns"] = INT8_ONLY_ALLOW_PATTERNS
+                snapshot_download(**download_kwargs)
             clear_transcription_model_cache()
             return True, None
         except Exception as e:
