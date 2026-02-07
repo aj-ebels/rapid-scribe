@@ -7,10 +7,10 @@ from pathlib import Path
 
 block_cipher = None
 
-# Include the Windows launcher and app icon (for window + taskbar when running from exe)
-added_datas = []
+# Include default prompts (shipped as initial AI Prompts) and platform-specific assets
+added_datas = [('prompts.json', '.')]
 if sys.platform == 'win32':
-    added_datas = [('Run Meetings Transcriber.bat', '.')]
+    added_datas.append(('Run Meetings Transcriber.bat', '.'))
     # Bundle icon.ico so the app window and taskbar show it; add icon.ico to project root first
     if (Path.cwd() / 'icon.ico').exists():
         added_datas.append(('icon.ico', '.'))

@@ -1,21 +1,63 @@
 """
 AI prompt templates: JSON storage, CRUD, placeholder for transcript insertion.
+User prompts live in app data; bundled prompts.json is used as initial default when shipping the app.
 """
 import json
+import os
+import sys
 import uuid
 from pathlib import Path
 
 _BASE = Path(__file__).resolve().parent
-PROMPTS_FILE = _BASE / "prompts.json"
 TRANSCRIPT_PLACEHOLDER = "{{transcript}}"
 
 
+def _get_app_data_dir():
+    """Same as api_key_storage: per-user app data directory."""
+    if os.name == "nt":
+        base = os.environ.get("APPDATA", str(Path.home() / "AppData" / "Roaming"))
+    elif sys.platform == "darwin":
+        base = str(Path.home() / "Library" / "Application Support")
+    else:
+        base = os.environ.get("XDG_CONFIG_HOME", str(Path.home() / ".config"))
+    return Path(base) / "Meetings"
+
+
+def _get_user_prompts_path():
+    """Path to the writable prompts file (app data)."""
+    return _get_app_data_dir() / "prompts.json"
+
+
+def _get_bundled_prompts_path():
+    """Path to the shipped default prompts (next to exe when frozen, else project root)."""
+    if getattr(sys, "frozen", False):
+        return Path(sys.executable).parent / "prompts.json"
+    return _BASE / "prompts.json"
+
+
 def load_prompts():
-    """Load prompt templates from JSON file. Returns list of dicts with id, name, prompt."""
-    if not PROMPTS_FILE.exists():
+    """Load prompt templates. Uses app-data file; if missing, copies bundled default then loads."""
+    user_path = _get_user_prompts_path()
+    default_path = _get_bundled_prompts_path()
+    if user_path.exists():
+        pass  # load from user path
+    elif default_path.exists():
+        try:
+            user_path.parent.mkdir(parents=True, exist_ok=True)
+            user_path.write_bytes(default_path.read_bytes())
+        except Exception:
+            return _load_prompts_from_path(default_path)
+    else:
+        return []
+    return _load_prompts_from_path(user_path)
+
+
+def _load_prompts_from_path(path):
+    """Load prompt list from a JSON file. Returns list of dicts with id, name, prompt."""
+    if not path.exists():
         return []
     try:
-        with open(PROMPTS_FILE, "r", encoding="utf-8") as f:
+        with open(path, "r", encoding="utf-8") as f:
             data = json.load(f)
         return data if isinstance(data, list) else []
     except Exception:
@@ -23,8 +65,10 @@ def load_prompts():
 
 
 def save_prompts(prompts):
-    """Save prompt templates to JSON file."""
-    with open(PROMPTS_FILE, "w", encoding="utf-8") as f:
+    """Save prompt templates to the user app-data file."""
+    path = _get_user_prompts_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with open(path, "w", encoding="utf-8") as f:
         json.dump(prompts, f, indent=2, ensure_ascii=False)
 
 
