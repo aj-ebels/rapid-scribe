@@ -17,6 +17,7 @@ from .transcription import (
     PARAKEET_MODEL,
     STANDARD_TRANSCRIPTION_MODEL,
     get_transcription_model,
+    is_transcription_model_loaded,
     clear_transcription_model_cache,
     list_installed_transcription_models,
     uninstall_transcription_model,
@@ -65,29 +66,52 @@ def _is_transcription_model_installed(app):
     return current in repo_ids
 
 
+def _on_model_load_done(app):
+    """Called from main thread after background model load finishes."""
+    app._model_load_in_progress = False
+    update_model_status(app)
+
+
 def update_model_status(app):
-    """Update status bar, Start button, and model status label to reflect whether the selected model is installed."""
+    """Update status bar, Start button, and model status label. Installed + loaded = ready to record."""
     installed = _is_transcription_model_installed(app)
+    current_model = app.settings.get("transcription_model") or PARAKEET_MODEL
+    loaded = installed and is_transcription_model_loaded(current_model)
+    ready = installed and loaded
+
     if getattr(app, "model_status_var", None) is not None:
-        if installed:
-            app.model_status_var.set("Transcription model: Ready — you can start recording.")
-            if getattr(app, "model_status_label", None) is not None:
-                app.model_status_label.configure(text_color="gray")
-        else:
+        if not installed:
             app.model_status_var.set("Transcription model: Not installed — open the Models tab and click \"Download & install\" before recording.")
             if getattr(app, "model_status_label", None) is not None:
                 try:
-                    c = getattr(app, "model_status_warning_color", "#f7768e")
-                    app.model_status_label.configure(text_color=c)
+                    app.model_status_label.configure(text_color=getattr(app, "model_status_warning_color", "#f7768e"))
                 except Exception:
                     pass
-    if getattr(app, "status_var", None) is not None:
-        if installed:
-            app.status_var.set("Ready — click Start to begin")
+        elif not loaded:
+            app.model_status_var.set("Transcription model: Loading…")
+            if getattr(app, "model_status_label", None) is not None:
+                app.model_status_label.configure(text_color="gray")
+            if not getattr(app, "_model_load_in_progress", False):
+                app._model_load_in_progress = True
+                def do_load():
+                    try:
+                        get_transcription_model(current_model)
+                    finally:
+                        app.root.after(0, lambda: _on_model_load_done(app))
+                threading.Thread(target=do_load, daemon=True).start()
         else:
+            app.model_status_var.set("Transcription model: Ready — you can start recording.")
+            if getattr(app, "model_status_label", None) is not None:
+                app.model_status_label.configure(text_color="gray")
+    if getattr(app, "status_var", None) is not None:
+        if not installed:
             app.status_var.set("Install a transcription model first (Models tab → Download & install)")
+        elif not loaded:
+            app.status_var.set("Loading model…")
+        else:
+            app.status_var.set("Ready — click Start to begin")
     if getattr(app, "start_btn", None) is not None:
-        app.start_btn.configure(state="normal" if installed else "disabled")
+        app.start_btn.configure(state="normal" if ready else "disabled")
 
 
 def start_stop(app):

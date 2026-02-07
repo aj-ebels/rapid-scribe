@@ -70,6 +70,12 @@ def clear_transcription_model_cache():
     _parakeet_model_id = None
 
 
+def is_transcription_model_loaded(model_id=None):
+    """Return True if the given model is currently loaded in memory (ready to transcribe)."""
+    model_id = model_id or PARAKEET_MODEL
+    return _parakeet_model is not None and _parakeet_model_id == model_id
+
+
 @contextlib.contextmanager
 def _safe_stdout_stderr():
     """
