@@ -8,90 +8,7 @@ Same Parakeet/ONNX stack as Meetily: https://github.com/Zackriya-Solutions/meeti
 import os
 import sys
 import json
-import subprocess
 import tempfile
-
-# Subprocess entry for frozen build (PyInstaller): mic capture only — no pyaudiowpatch/GUI in this process
-if len(sys.argv) >= 2 and sys.argv[1] == "--mic-capture":
-    if len(sys.argv) < 3:
-        sys.stderr.write("Usage: --mic-capture <device_index> [sample_rate] [chunk_samples]\n")
-        sys.exit(1)
-    import numpy as _np
-    import sounddevice as _sd
-    _di = int(sys.argv[2])
-    _sr = int(sys.argv[3]) if len(sys.argv) > 3 else 16000
-    _cs = int(sys.argv[4]) if len(sys.argv) > 4 else 80000
-    _out = sys.stdout.buffer
-    try:
-        while True:
-            _chunk = _sd.rec(_cs, samplerate=_sr, channels=1, dtype=_np.float32, device=_di, blocking=True)
-            if _chunk is not None and _chunk.size > 0:
-                _out.write(_np.asarray(_chunk, dtype=_np.float32).flatten().tobytes())
-                _out.flush()
-    except (KeyboardInterrupt, BrokenPipeError):
-        pass
-    except Exception as e:
-        sys.stderr.write(f"mic_capture error: {e}\n")
-        sys.exit(1)
-    sys.exit(0)
-# Loopback subprocess entry (frozen build): pyaudiowpatch only, write float32 PCM to stdout
-if len(sys.argv) >= 2 and sys.argv[1] == "--loopback-capture":
-    if len(sys.argv) < 3:
-        sys.stderr.write("Usage: --loopback-capture <device_index|default> [sample_rate] [chunk_samples]\n")
-        sys.exit(1)
-    if sys.platform != "win32":
-        sys.stderr.write("Loopback is Windows-only.\n")
-        sys.exit(1)
-    import numpy as _np
-    import pyaudiowpatch as _pyaudio
-    _dev_arg = sys.argv[2]
-    _dev_idx = None if _dev_arg.lower() == "default" else int(_dev_arg)
-    _sr = int(sys.argv[3]) if len(sys.argv) > 3 else 16000
-    _cs = int(sys.argv[4]) if len(sys.argv) > 4 else 80000
-    _dur = _cs / _sr
-    _out = sys.stdout.buffer
-    try:
-        with _pyaudio.PyAudio() as _p:
-            if _dev_idx is not None:
-                _dev = _p.get_device_info_by_index(_dev_idx)
-            else:
-                _wi = _p.get_host_api_info_by_type(_pyaudio.paWASAPI)
-                _dev = _p.get_device_info_by_index(_wi["defaultOutputDevice"])
-                if not _dev.get("isLoopbackDevice"):
-                    for _lb in _p.get_loopback_device_info_generator():
-                        if _dev["name"] in _lb["name"]:
-                            _dev = _lb
-                            break
-            _rate = int(_dev["defaultSampleRate"])
-            _ch = int(_dev["maxInputChannels"])
-            _nf = int(_rate * _dur) * _ch
-            while True:
-                _buf = []
-                with _p.open(format=_pyaudio.paInt16, channels=_ch, rate=_rate, frames_per_buffer=1024,
-                             input=True, input_device_index=_dev["index"]) as _stream:
-                    while len(_buf) * 1024 < _nf:
-                        try:
-                            _buf.append(_np.frombuffer(_stream.read(1024, exception_on_overflow=False), dtype=_np.int16))
-                        except Exception:
-                            break
-                if not _buf:
-                    continue
-                _raw = _np.concatenate(_buf)[:_nf].reshape(-1, _ch).astype(_np.float64) / 32768.0
-                _mono = _np.mean(_raw, axis=1).astype(_np.float32)
-                if _rate != _sr:
-                    _nout = int(round(len(_mono) * _sr / _rate))
-                    _mono = _np.array(_np.interp(_np.linspace(0, len(_mono) - 1, _nout), _np.arange(len(_mono)), _mono), dtype=_np.float32)
-                _mono = _mono[:_cs]
-                if len(_mono) < _cs:
-                    _mono = _np.pad(_mono, (0, _cs - len(_mono)))
-                _out.write(_mono.tobytes())
-                _out.flush()
-    except (KeyboardInterrupt, BrokenPipeError):
-        pass
-    except Exception as _e:
-        sys.stderr.write(f"loopback_capture error: {_e}\n")
-        sys.exit(1)
-    sys.exit(0)
 import threading
 import time
 import queue
@@ -226,8 +143,6 @@ def uninstall_transcription_model(repo_id, revision_hashes):
 # -----------------------------------------------------------------------------
 
 SETTINGS_FILE = Path(__file__).resolve().parent / "settings.json"
-MIC_CAPTURE_SCRIPT = Path(__file__).resolve().parent / "mic_capture_subprocess.py"
-LOOPBACK_CAPTURE_SCRIPT = Path(__file__).resolve().parent / "loopback_capture_subprocess.py"
 AUDIO_MODE_DEFAULT = "default"
 AUDIO_MODE_LOOPBACK = "loopback"
 AUDIO_MODE_MEETING = "meeting"
@@ -407,19 +322,6 @@ def capture_worker(device_index, chunk_queue, stop_event):
             break
 
 
-def _ensure_float32_mono_16k(samples, in_rate, in_channels):
-    """Convert to float32 mono 16 kHz. samples: ndarray (frames,) or (frames, ch)."""
-    if samples.dtype != np.float32:
-        samples = samples.astype(np.float64) / (np.iinfo(samples.dtype).max if np.issubdtype(samples.dtype, np.integer) else 1.0)
-        samples = samples.astype(np.float32)
-    if len(samples.shape) > 1 and samples.shape[1] > 1:
-        samples = np.mean(samples, axis=1)
-    if in_rate != SAMPLE_RATE:
-        num_out = int(round(len(samples) * SAMPLE_RATE / in_rate))
-        samples = resample(samples, num_out).astype(np.float32)
-    return samples
-
-
 def capture_worker_loopback(loopback_device_index, chunk_queue, stop_event):
     """Record from WASAPI loopback only (PyAudioWPatch). Puts chunk paths into chunk_queue."""
     if sys.platform != "win32":
@@ -497,197 +399,12 @@ def capture_worker_loopback(loopback_device_index, chunk_queue, stop_event):
                 pass
 
 
-def capture_worker_mic_sounddevice(device_index, out_queue, stop_event):
-    """Capture mic with sounddevice only; put float32 mono chunks (CHUNK_SAMPLES) into out_queue."""
-    try:
-        default_sr = sd.query_devices(device_index, "input")["default_samplerate"]
-        rate = int(default_sr)
-    except Exception:
-        rate = SAMPLE_RATE
-    while not stop_event.is_set():
-        try:
-            chunk = sd.rec(
-                CHUNK_SAMPLES,
-                samplerate=SAMPLE_RATE,
-                channels=CHANNELS,
-                dtype=np.float32,
-                device=device_index,
-                blocking=True,
-            )
-            if stop_event.is_set():
-                break
-            out_queue.put(chunk.copy())
-        except Exception as e:
-            if not stop_event.is_set():
-                try:
-                    out_queue.put(("error", str(e)))
-                except queue.Full:
-                    pass
-            break
-
-
-def capture_worker_loopback_for_meeting(loopback_device_index, out_queue, stop_event):
-    """Capture loopback with PyAudioWPatch; put float32 mono 16k chunks (CHUNK_SAMPLES) into out_queue."""
-    if sys.platform != "win32":
-        return
-    try:
-        import pyaudiowpatch as pyaudio
-    except ImportError:
-        return
-    try:
-        with pyaudio.PyAudio() as p:
-            if loopback_device_index is not None:
-                dev = p.get_device_info_by_index(loopback_device_index)
-            else:
-                wasapi_info = p.get_host_api_info_by_type(pyaudio.paWASAPI)
-                default_speakers = p.get_device_info_by_index(wasapi_info["defaultOutputDevice"])
-                if not default_speakers.get("isLoopbackDevice"):
-                    for loopback in p.get_loopback_device_info_generator():
-                        if default_speakers["name"] in loopback["name"]:
-                            default_speakers = loopback
-                            break
-                dev = default_speakers
-            rate = int(dev["defaultSampleRate"])
-            ch = int(dev["maxInputChannels"])
-            chunk_frames_loopback = int(rate * CHUNK_DURATION_SEC) * ch
-            while not stop_event.is_set():
-                buf = []
-                with p.open(
-                    format=pyaudio.paInt16,
-                    channels=ch,
-                    rate=rate,
-                    frames_per_buffer=1024,
-                    input=True,
-                    input_device_index=dev["index"],
-                ) as stream:
-                    while len(buf) * 1024 < chunk_frames_loopback and not stop_event.is_set():
-                        try:
-                            data = stream.read(1024, exception_on_overflow=False)
-                            buf.append(np.frombuffer(data, dtype=np.int16))
-                        except Exception:
-                            break
-                if stop_event.is_set():
-                    break
-                if not buf:
-                    continue
-                raw = np.concatenate(buf)[:chunk_frames_loopback]
-                raw = raw.reshape(-1, ch).astype(np.float64) / 32768.0
-                mono = np.mean(raw, axis=1).astype(np.float32)
-                if rate != SAMPLE_RATE:
-                    num_out = int(round(len(mono) * SAMPLE_RATE / rate))
-                    mono = resample(mono, num_out).astype(np.float32)
-                mono = mono[:CHUNK_SAMPLES]
-                if len(mono) < CHUNK_SAMPLES:
-                    mono = np.pad(mono, (0, CHUNK_SAMPLES - len(mono)))
-                out_queue.put(mono.copy())
-    except Exception:
-        if not stop_event.is_set():
-            try:
-                out_queue.put(("error", "Loopback failed"))
-            except queue.Full:
-                pass
-
-
 def _meeting_chunk_ready(app, wav_path: str):
     """Callback from ChunkRecorder (in-process Meeting mode): queue WAV path for transcription."""
     try:
         app.chunk_queue.put_nowait(wav_path)
     except queue.Full:
         pass
-
-
-def capture_mixer_worker(mic_queue, loopback_queue, chunk_queue, stop_event):
-    """
-    Read one chunk from mic and one from loopback (sounddevice + pyaudiowpatch);
-    mix 50/50 and push to chunk_queue as WAV path. This avoids two WASAPI streams
-    in the same library so the mic stays active.
-    """
-    while not stop_event.is_set():
-        try:
-            mic_chunk = mic_queue.get(timeout=0.5)
-            if isinstance(mic_chunk, tuple) and mic_chunk[0] == "error":
-                chunk_queue.put_nowait(("error", mic_chunk[1]))
-                continue
-        except queue.Empty:
-            continue
-        try:
-            loopback_chunk = loopback_queue.get(timeout=CHUNK_DURATION_SEC + 1)
-            if isinstance(loopback_chunk, tuple) and loopback_chunk[0] == "error":
-                chunk_queue.put_nowait(("error", loopback_chunk[1]))
-                continue
-        except queue.Empty:
-            continue
-        if stop_event.is_set():
-            break
-        # Align lengths
-        m = np.asarray(mic_chunk, dtype=np.float32).flatten()[:CHUNK_SAMPLES]
-        l = np.asarray(loopback_chunk, dtype=np.float32).flatten()[:CHUNK_SAMPLES]
-        if len(m) < CHUNK_SAMPLES:
-            m = np.pad(m, (0, CHUNK_SAMPLES - len(m)))
-        if len(l) < CHUNK_SAMPLES:
-            l = np.pad(l, (0, CHUNK_SAMPLES - len(l)))
-        mixed = (0.5 * m + 0.5 * l).astype(np.float32)
-        if _is_silent(mixed):
-            continue
-        chunk_int16 = (np.clip(mixed, -1.0, 1.0) * 32767).astype(np.int16)
-        wavfile.write(str(CHUNK_PATH), SAMPLE_RATE, chunk_int16)
-        try:
-            chunk_queue.put(str(CHUNK_PATH), timeout=1.0)
-        except queue.Full:
-            pass
-
-
-def mic_pipe_reader_thread(proc, mic_queue, stop_event):
-    """
-    Read raw float32 PCM from subprocess stdout (mic_capture_subprocess.py).
-    Puts numpy float32 arrays of shape (CHUNK_SAMPLES,) into mic_queue.
-    """
-    chunk_bytes = CHUNK_SAMPLES * 4
-    try:
-        while not stop_event.is_set():
-            data = proc.stdout.read(chunk_bytes)
-            if not data:
-                break
-            if len(data) < chunk_bytes:
-                data = data + b"\x00" * (chunk_bytes - len(data))
-            arr = np.frombuffer(data, dtype=np.float32).copy()
-            try:
-                mic_queue.put(arr, timeout=1.0)
-            except queue.Full:
-                pass
-    except (BrokenPipeError, ValueError, OSError):
-        pass
-    except Exception:
-        if not stop_event.is_set():
-            try:
-                mic_queue.put_nowait(("error", "Mic pipe read failed"))
-            except queue.Full:
-                pass
-
-
-def loopback_pipe_reader_thread(proc, loopback_queue, stop_event):
-    """Read float32 PCM from loopback subprocess stdout; put arrays into loopback_queue."""
-    chunk_bytes = CHUNK_SAMPLES * 4
-    try:
-        while not stop_event.is_set():
-            data = proc.stdout.read(chunk_bytes)
-            if not data:
-                break
-            if len(data) < chunk_bytes:
-                data = data + b"\x00" * (chunk_bytes - len(data))
-            arr = np.frombuffer(data, dtype=np.float32).copy()
-            try:
-                loopback_queue.put(arr, timeout=1.0)
-            except queue.Full:
-                pass
-    except (BrokenPipeError, ValueError, OSError):
-        pass
-    except Exception:
-        if not stop_event.is_set():
-            try:
-                loopback_queue.put_nowait(("error", "Loopback pipe read failed"))
-            except queue.Full:
-                pass
 
 
 # -----------------------------------------------------------------------------
@@ -849,18 +566,6 @@ def start_stop(app):
             except Exception:
                 pass
             app.recorder = None
-        # Terminate subprocesses so pipe reader threads can exit (used only for legacy/other modes)
-        for name in ("mic_subprocess", "loopback_subprocess"):
-            proc = getattr(app, name, None)
-            if proc is not None and proc.poll() is None:
-                try:
-                    proc.terminate()
-                    proc.wait(timeout=2)
-                except subprocess.TimeoutExpired:
-                    proc.kill()
-                except Exception:
-                    pass
-                setattr(app, name, None)
         for t in getattr(app, "capture_threads", []) or ([app.capture_thread] if app.capture_thread else []):
             if t and t.is_alive():
                 t.join(timeout=CHUNK_DURATION_SEC + 2)
