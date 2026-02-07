@@ -7,6 +7,12 @@ import queue
 from pathlib import Path
 
 import numpy as np
+
+try:
+    from diagnostic import write as diag
+except ImportError:
+    def diag(*parts, **kwargs):
+        pass
 import sounddevice as sd
 from scipy.io import wavfile
 from scipy.signal import resample
@@ -52,9 +58,11 @@ def capture_worker(device_index, chunk_queue, stop_event):
             wavfile.write(str(CHUNK_PATH), SAMPLE_RATE, chunk_int16)
             try:
                 chunk_queue.put(str(CHUNK_PATH), timeout=1.0)
+                diag("chunk_queued", path=str(CHUNK_PATH), worker="default")
             except queue.Full:
                 pass
         except Exception as e:
+            diag("capture_error", worker="default", error=str(e))
             if not stop_event.is_set():
                 try:
                     chunk_queue.put_nowait(("error", str(e)))
@@ -130,9 +138,11 @@ def capture_worker_loopback(loopback_device_index, chunk_queue, stop_event):
                 wavfile.write(str(CHUNK_PATH), SAMPLE_RATE, chunk_int16)
                 try:
                     chunk_queue.put(str(CHUNK_PATH), timeout=1.0)
+                    diag("chunk_queued", path=str(CHUNK_PATH), worker="loopback")
                 except queue.Full:
                     pass
     except Exception as e:
+        diag("capture_error", worker="loopback", error=str(e))
         if not stop_event.is_set():
             try:
                 chunk_queue.put_nowait(("error", str(e)))
@@ -142,6 +152,11 @@ def capture_worker_loopback(loopback_device_index, chunk_queue, stop_event):
 
 def meeting_chunk_ready(app, wav_path: str):
     """Callback from ChunkRecorder (in-process Meeting mode): queue WAV path for transcription."""
+    try:
+        from diagnostic import write as diag
+        diag("chunk_queued", path=wav_path, worker="meeting")
+    except ImportError:
+        pass
     try:
         app.chunk_queue.put_nowait(wav_path)
     except queue.Full:

@@ -68,6 +68,11 @@ class ChunkRecorder:
         try:
             wavfile.write(wav_path, self.asr_sample_rate, mono_int16)
         except Exception as e:
+            try:
+                from diagnostic import write as diag
+                diag("chunk_write_failed", path=wav_path, error=str(e))
+            except ImportError:
+                pass
             import logging
             logging.getLogger(__name__).exception("Failed to write chunk WAV %s: %s", wav_path, e)
             return
@@ -76,6 +81,11 @@ class ChunkRecorder:
             try:
                 cb(wav_path)
             except Exception as e:
+                try:
+                    from diagnostic import write as diag
+                    diag("on_chunk_ready_failed", path=wav_path, error=str(e))
+                except ImportError:
+                    pass
                 import logging
                 logging.getLogger(__name__).exception("on_chunk_ready failed: %s", e)
 

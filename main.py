@@ -16,7 +16,9 @@ try:
 except AttributeError:
     pass
 
+from diagnostic import init as init_diagnostic
 from gui import main
 
 if __name__ == "__main__":
+    init_diagnostic()
     main()

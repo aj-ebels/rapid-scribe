@@ -35,6 +35,7 @@ from capture import (
 )
 from ai_summary import generate_ai_summary
 from api_key_storage import get_openai_api_key, set_openai_api_key, clear_openai_api_key
+from diagnostic import write as diag
 
 if sys.platform == "win32":
     from audio_mixer import AudioMixer
@@ -124,6 +125,7 @@ def start_stop(app):
         )
         return
     mode, mic_idx, loopback_idx = get_effective_audio_device(app)
+    diag("start_recording", mode=mode, mic_idx=mic_idx, loopback_idx=loopback_idx)
 
     if mode == AUDIO_MODE_DEFAULT:
         dev_idx, err = get_default_monitor_device()
@@ -172,7 +174,9 @@ def start_stop(app):
             app.capture_thread = None
             app.capture_threads = []
             app.status_var.set("Meeting (mic + loopback) — recording…")
+            diag("meeting_started", mixer_ok=True)
         except Exception as e:
+            diag("meeting_start_failed", error=str(e))
             app.log.insert("end", f"[Meeting] Start failed: {e}\n")
             app.log.see("end")
             if getattr(app, "mixer", None) is not None:
@@ -384,22 +388,51 @@ def main():
     install_row.pack(fill="x", padx=UI_PAD_LG, pady=(0, UI_PAD))
     app.install_model_status_var = ctk.StringVar(value="")
     ctk.CTkLabel(install_row, textvariable=app.install_model_status_var, font=ctk.CTkFont(family=UI_FONT_FAMILY, size=F.small), text_color="gray").pack(side="left", padx=(0, UI_PAD))
+    app.install_model_progress = ctk.CTkProgressBar(install_row, width=200, height=12, corner_radius=6, progress_color=COLORS["primary_fg"])
+    app.install_model_progress.pack(side="left", padx=(0, UI_PAD))
+    app.install_model_progress.set(0)
+    app.install_model_progress.pack_forget()  # hidden until download starts
     def _do_install_standard_model():
         app.install_model_status_var.set("Downloading… (this may take a few minutes)")
         app.install_model_btn.configure(state="disabled")
+        app.install_model_progress.pack(side="left", padx=(0, UI_PAD))
+        app.install_model_progress.set(0)
         if getattr(app, "model_status_var", None) is not None:
             app.model_status_var.set("Transcription model: Downloading… (one-time setup)")
         if getattr(app, "model_status_label", None) is not None:
             app.model_status_label.configure(text_color="gray")
         result_holder = []
+        progress_queue = queue.Queue()
+
         def worker():
-            ok, err = download_transcription_model(STANDARD_TRANSCRIPTION_MODEL)
+            ok, err = download_transcription_model(STANDARD_TRANSCRIPTION_MODEL, progress_queue=progress_queue)
             result_holder.append((ok, err))
+
+        def _format_mb(n):
+            return f"{n / (1024 * 1024):.1f} MB"
+
         def check_done():
+            # Drain progress updates
+            try:
+                while True:
+                    current, total = progress_queue.get_nowait()
+                    if total and total > 0:
+                        p = min(1.0, current / total)
+                        app.install_model_progress.set(p)
+                        app.install_model_status_var.set(f"Downloading… {_format_mb(current)} / {_format_mb(total)}")
+                    else:
+                        # Total not yet known; show bytes so far
+                        if current > 0:
+                            app.install_model_progress.set(0.0)  # indeterminate look
+                            app.install_model_status_var.set(f"Downloading… {_format_mb(current)}…")
+            except queue.Empty:
+                pass
             if not result_holder:
-                app.root.after(300, check_done)
+                app.root.after(200, check_done)
                 return
             ok, err = result_holder[0]
+            app.install_model_progress.set(1.0)
+            app.root.after(100, lambda: app.install_model_progress.pack_forget())
             app.install_model_btn.configure(state="normal")
             if ok:
                 app.install_model_status_var.set("Ready. You can start recording.")
@@ -411,7 +444,8 @@ def main():
                 app.install_model_status_var.set("")
                 messagebox.showerror("Install failed", err or "Download failed.", parent=app.root)
         threading.Thread(target=worker, daemon=True).start()
-        app.root.after(300, check_done)
+        app.root.after(200, check_done)
+
     app.install_model_btn = ctk.CTkButton(install_row, text="Download & install", font=ctk.CTkFont(family=UI_FONT_FAMILY, size=F.small), width=140, height=32, corner_radius=UI_RADIUS, fg_color=COLORS["primary_fg"], hover_color=COLORS["primary_hover"], command=_do_install_standard_model)
     app.install_model_btn.pack(side="left")
 
@@ -436,7 +470,8 @@ def main():
         for w in models_scroll.winfo_children():
             w.destroy()
         models, err = list_installed_transcription_models()
-        repo_ids = [m["repo_id"] for m in models] if models else []
+        installed_repo_ids = [m["repo_id"] for m in models] if models else []
+        repo_ids = list(installed_repo_ids)
         current = app.settings.get("transcription_model") or PARAKEET_MODEL
         if current not in repo_ids and repo_ids:
             repo_ids.insert(0, current)
@@ -449,9 +484,9 @@ def main():
             app.settings["transcription_model"] = chosen
             save_settings(app.settings)
             clear_transcription_model_cache()
-        # Update install-standard-model button when list changes
+        # Update install-standard-model button from actual installed list (not dropdown list)
         if getattr(app, "install_model_btn", None) is not None:
-            if STANDARD_TRANSCRIPTION_MODEL in repo_ids:
+            if STANDARD_TRANSCRIPTION_MODEL in installed_repo_ids:
                 app.install_model_btn.configure(state="disabled")
                 if getattr(app, "install_model_status_var", None) is not None:
                     app.install_model_status_var.set("Already installed.")

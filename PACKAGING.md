@@ -87,6 +87,33 @@ Name: "{autodesktop}\Blue Bridge Meeting Companion"; Filename: "{app}\Meetings.e
 
 Build the installer from Inno Setup (Compile), then share the generated `.exe` installer.
 
+## Diagnosing "no audio transcribed" in the built app
+
+When the built exe runs but nothing gets transcribed, the app writes a **diagnostic log** so you can see where the pipeline stops (no console window = failures are otherwise silent).
+
+1. **Run the built app**, choose your audio mode, click **Start**, speak or play audio for 10–20 seconds, then **Stop**.
+2. **Open the log file:**  
+   `%APPDATA%\Meetings\diagnostic.log`  
+   (e.g. `C:\Users\<You>\AppData\Roaming\Meetings\diagnostic.log`)
+3. **Read the last run.** You’ll see lines like:
+   - `start_recording mode=...` — confirms which mode and devices were used.
+   - `meeting_started` or `meeting_start_failed` — in Meeting mode, whether the mixer started.
+   - `chunk_queued` — audio chunks are being captured and queued.
+   - `transcription_model_loaded` or `transcription_model_load_failed` — model loaded or failed (e.g. not downloaded).
+   - `transcription_got_path` — worker received a WAV path (check `exists=True`).
+   - `transcription_ok` / `transcription_recognize_failed` — recognize step succeeded or threw.
+
+**Typical causes when nothing is transcribed:**
+
+- **No `chunk_queued`** → Capture is failing (device, permissions, or silence threshold). Check for `capture_error` or `meeting_start_failed`.
+- **`transcription_model_load_failed`** → Model not installed. Have the user open the **Models** tab and click **Download & install**.
+- **`transcription_got_path exists=False`** → WAV path not valid for the worker (e.g. temp dir difference). Check `chunk_write_failed` in the log.
+- **`transcription_recognize_failed`** → ONNX/model error; the log will show the exception.
+
+You can also run with a console to see tracebacks: in `meetings.spec` set `console=True`, rebuild, and run the exe from a terminal.
+
+---
+
 ## Troubleshooting
 
 | Issue | What to try |
