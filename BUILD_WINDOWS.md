@@ -13,9 +13,10 @@ Open **Command Prompt** or **PowerShell** (in Windows) and run:
 ```cmd
 cd path\to\meetings
 python -m venv .venv
-.venv\Scripts\python.exe -m pip install -r requirements.txt
-.venv\Scripts\python.exe -m pip install pyinstaller
-.venv\Scripts\python.exe -m pyinstaller meetings.spec
+.venv\Scripts\activate
+pip install -r requirements.txt
+pip install pyinstaller
+pyinstaller meetings.spec
 ```
 
 ## 2. What you get

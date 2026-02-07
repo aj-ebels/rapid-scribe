@@ -12,7 +12,7 @@ added_datas = []
 if sys.platform == 'win32':
     added_datas = [('Run Meetings Transcriber.bat', '.')]
     # Bundle icon.ico so the app window and taskbar show it; add icon.ico to project root first
-    if (Path(__file__).resolve().parent / 'icon.ico').exists():
+    if (Path.cwd() / 'icon.ico').exists():
         added_datas.append(('icon.ico', '.'))
 
 a = Analysis(
@@ -44,7 +44,7 @@ pyz = PYZ(a.pure, a.zipped_data, cipher=block_cipher)
 
 # One-folder: exe is small, rest is in the same folder (faster startup, reliable with heavy deps)
 # Use icon.ico for the .exe file (Explorer, taskbar pin). Create icon.ico in project root.
-exe_icon = 'icon.ico' if (Path(__file__).resolve().parent / 'icon.ico').exists() else None
+exe_icon = 'icon.ico' if (Path.cwd() / 'icon.ico').exists() else None
 exe = EXE(
     pyz,
     a.scripts,
