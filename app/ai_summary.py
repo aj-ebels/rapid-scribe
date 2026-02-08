@@ -1,18 +1,38 @@
 """
 AI summary: OpenAI API call with prompt template and transcript.
+Rate limited to 1 call/5 seconds and 5 calls/minute.
 """
+import threading
+import time
+
 from .prompts import TRANSCRIPT_PLACEHOLDER
+
+_recent_calls = []
+_rate_limit_lock = threading.Lock()
 
 
 def generate_ai_summary(api_key, prompt_template, transcript):
     """
     Call OpenAI API to generate summary.
     Returns (success, result_text_or_error).
+    Rate limited to 1 call/5 seconds, 5 calls/minute.
     """
     if not (prompt_template or "").strip():
         return False, "Prompt template is empty."
     if not (transcript or "").strip():
         return False, "Transcript is empty."
+
+    now = time.time()
+    with _rate_limit_lock:
+        global _recent_calls
+        _recent_calls = [t for t in _recent_calls if now - t < 60]
+        if len(_recent_calls) >= 5:
+            return False, "Rate limit: maximum 5 AI summary calls per minute. Please try again later."
+        if _recent_calls and (now - _recent_calls[-1]) < 5.0:
+            wait_s = 5.0 - (now - _recent_calls[-1])
+            return False, f"Rate limit: please wait {max(5, int(wait_s))} second(s) between calls."
+        _recent_calls.append(now)
+
     text = prompt_template.replace(TRANSCRIPT_PLACEHOLDER, transcript)
     try:
         from openai import OpenAI
