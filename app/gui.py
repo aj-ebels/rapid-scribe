@@ -668,7 +668,10 @@ def main():
             name_part = name_part.replace(" ", "-").strip("-") or "export"
         else:
             name_part = "export"
-        default_name = f"{date.today().isoformat()} {name_part}.md"
+        if app.export_prepend_date_var.get():
+            default_name = f"{date.today().isoformat()} {name_part}.md"
+        else:
+            default_name = f"{name_part}.md"
         path = filedialog.asksaveasfilename(parent=root, defaultextension=".md", filetypes=[("Markdown", "*.md"), ("All files", "*.*")], initialfile=default_name)
         if not path:
             return
@@ -694,6 +697,8 @@ def main():
     app.export_name_var = ctk.StringVar(value="")
     app.export_name_entry = ctk.CTkEntry(export_row, textvariable=app.export_name_var, width=160, height=28, placeholder_text="e.g. meeting-notes", font=ctk.CTkFont(family=UI_FONT_FAMILY, size=F.small))
     app.export_name_entry.pack(side="left", padx=4, pady=4)
+    app.export_prepend_date_var = ctk.BooleanVar(value=True)
+    ctk.CTkCheckBox(export_row, text="Prepend today's date", variable=app.export_prepend_date_var, font=ctk.CTkFont(family=UI_FONT_FAMILY, size=F.small)).pack(side="left", padx=8, pady=4)
     ctk.CTkButton(export_row, text="Export", font=ctk.CTkFont(family=UI_FONT_FAMILY, size=F.small), width=80, height=28, corner_radius=UI_RADIUS, fg_color=COLORS["secondary_fg"], hover_color=COLORS["secondary_hover"], command=_export_markdown).pack(side="left", padx=(0, 0), pady=4)
 
     # AI Prompts tab
