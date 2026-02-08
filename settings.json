@@ -4,5 +4,7 @@
   "loopback_device_index": null,
   "transcription_model": "istupakov/parakeet-tdt-0.6b-v2-onnx",
   "chunk_duration_sec": 5.0,
-  "auto_generate_export_name": true
+  "auto_generate_export_name": true,
+  "export_prepend_date": true,
+  "auto_generate_summary_when_stopping": true
 }

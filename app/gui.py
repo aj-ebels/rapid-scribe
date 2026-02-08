@@ -144,6 +144,9 @@ def start_stop(app):
         elif getattr(app, "_record_ctk", None) is not None:
             app.start_btn.configure(image=app._record_ctk)
         app.status_var.set("Stopped")
+        if getattr(app, "auto_generate_summary_when_stopping_var", None) and app.auto_generate_summary_when_stopping_var.get():
+            if getattr(app, "_do_ai_summary", None):
+                app.root.after(500, app._do_ai_summary)
         return
     app.stop_event.clear()
     if not _is_transcription_model_installed(app):
@@ -615,6 +618,17 @@ def main():
     app.summary_status_var = ctk.StringVar(value="")
     ctk.CTkLabel(summary_header, textvariable=app.summary_status_var, font=ctk.CTkFont(family=UI_FONT_FAMILY, size=F.small), text_color="gray").pack(side="left", padx=(UI_PAD, 0), pady=4)
 
+    app.auto_generate_summary_when_stopping_var = ctk.BooleanVar(value=app.settings.get("auto_generate_summary_when_stopping", False))
+    def _on_auto_summary_when_stopping_changed():
+        app.settings["auto_generate_summary_when_stopping"] = app.auto_generate_summary_when_stopping_var.get()
+        save_settings(app.settings)
+    summary_options_row = ctk.CTkFrame(summary_panel, fg_color="transparent")
+    summary_options_row.pack(fill="x", pady=(0, 4))
+    ctk.CTkCheckBox(
+        summary_options_row, text="Auto-generate summary when recording stops", variable=app.auto_generate_summary_when_stopping_var,
+        font=ctk.CTkFont(family=UI_FONT_FAMILY, size=F.small), command=_on_auto_summary_when_stopping_changed
+    ).pack(side="left", padx=0, pady=0)
+
     def _refresh_summary_prompt_menu():
         prompts_list = load_prompts()
         names = [p.get("name", "Unnamed") for p in prompts_list] or ["(No prompts — add in AI Prompts tab)"]
@@ -680,6 +694,7 @@ def main():
         threading.Thread(target=worker, daemon=True).start()
         root.after(200, check_done)
 
+    app._do_ai_summary = _do_ai_summary
     app.summary_generate_btn = ctk.CTkButton(summary_header, text="Generate", font=ctk.CTkFont(family=UI_FONT_FAMILY, size=F.small), width=100, height=36, corner_radius=UI_RADIUS, fg_color=COLORS["primary_fg"], hover_color=COLORS["primary_hover"], command=_do_ai_summary)
     app.summary_generate_btn.pack(side="left", padx=(UI_PAD, 0), pady=4)
 
@@ -728,14 +743,20 @@ def main():
     app.export_name_var = ctk.StringVar(value="")
     app.export_name_entry = ctk.CTkEntry(export_row, textvariable=app.export_name_var, width=280, height=28, placeholder_text="e.g. meeting-notes", font=ctk.CTkFont(family=UI_FONT_FAMILY, size=F.small))
     app.export_name_entry.pack(side="left", padx=4, pady=4)
-    app.export_prepend_date_var = ctk.BooleanVar(value=True)
-    ctk.CTkCheckBox(export_row, text="Prepend today's date", variable=app.export_prepend_date_var, font=ctk.CTkFont(family=UI_FONT_FAMILY, size=F.small)).pack(side="left", padx=8, pady=4)
+    app.export_prepend_date_var = ctk.BooleanVar(value=app.settings.get("export_prepend_date", True))
+    def _on_prepend_date_changed():
+        app.settings["export_prepend_date"] = app.export_prepend_date_var.get()
+        save_settings(app.settings)
+    ctk.CTkCheckBox(
+        export_row, text="Prepend today's date", variable=app.export_prepend_date_var,
+        font=ctk.CTkFont(family=UI_FONT_FAMILY, size=F.small), command=_on_prepend_date_changed
+    ).pack(side="left", padx=8, pady=4)
     app.auto_generate_export_name_var = ctk.BooleanVar(value=app.settings.get("auto_generate_export_name", True))
     def _on_auto_generate_name_changed():
         app.settings["auto_generate_export_name"] = app.auto_generate_export_name_var.get()
         save_settings(app.settings)
     app.auto_generate_export_name_cb = ctk.CTkCheckBox(
-        export_row, text="Also auto-generate file name", variable=app.auto_generate_export_name_var,
+        export_row, text="Also AI-generate file name if blank", variable=app.auto_generate_export_name_var,
         font=ctk.CTkFont(family=UI_FONT_FAMILY, size=F.small), command=_on_auto_generate_name_changed
     )
     app.auto_generate_export_name_cb.pack(side="left", padx=8, pady=4)

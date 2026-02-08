@@ -71,7 +71,7 @@ def generate_export_name(api_key, summary_excerpt):
 
     prompt = (
         "Generate a very concise export file name for this meeting summary, "
-        "suitable for a filename (no extension). Examples: \"ABC Industries call\", \"post-conference meeting\". "
+        "suitable for a filename (no extension). Examples: \"ABC Industries call\", \"conference debrief meeting\". "
         "Reply with only the suggested name, nothing else.\n\nSummary excerpt:\n" + excerpt[:250]
     )
     try:

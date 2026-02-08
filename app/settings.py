@@ -44,6 +44,8 @@ def load_settings(default_model=None):
         "transcription_model": model,
         "chunk_duration_sec": 5.0,
         "auto_generate_export_name": True,
+        "export_prepend_date": True,
+        "auto_generate_summary_when_stopping": False,
     }
     if not SETTINGS_FILE.exists():
         return out
@@ -59,6 +61,10 @@ def load_settings(default_model=None):
                 out["chunk_duration_sec"] = max(3.0, min(30.0, float(data["chunk_duration_sec"])))
             if "auto_generate_export_name" in data:
                 out["auto_generate_export_name"] = bool(data["auto_generate_export_name"])
+            if "export_prepend_date" in data:
+                out["export_prepend_date"] = bool(data["export_prepend_date"])
+            if "auto_generate_summary_when_stopping" in data:
+                out["auto_generate_summary_when_stopping"] = bool(data["auto_generate_summary_when_stopping"])
     except Exception:
         pass
     return out
