@@ -47,11 +47,17 @@ class AudioMixer:
         self._thread = None
         self._lock = threading.Lock()
         self._stereo_callback = None
+        self._level_callback = None
 
     def set_stereo_callback(self, callback):
         """Set callable(stereo_frames: np.ndarray) invoked from capture thread for each block."""
         with self._lock:
             self._stereo_callback = callback
+
+    def set_level_callback(self, callback):
+        """Set callable(rms: float) invoked from capture thread with mic RMS per block."""
+        with self._lock:
+            self._level_callback = callback
 
     def _run_capture(self):
         """
@@ -71,6 +77,7 @@ class AudioMixer:
                 time.sleep(0.001)
                 continue
             n_mic = len(mic_mono)
+            mic_rms = float(np.sqrt(np.mean(mic_mono.astype(np.float64) ** 2)))
 
             try:
                 available = self._loopback_stream.get_read_available()
@@ -93,6 +100,15 @@ class AudioMixer:
             except Exception as e:
                 log.exception("Loopback read failed: %s", e)
                 loopback_mono = np.zeros(n_mic, dtype=np.float32)
+
+            with self._lock:
+                level_cb = self._level_callback
+            if level_cb is not None:
+                try:
+                    loopback_rms = float(np.sqrt(np.mean(loopback_mono.astype(np.float64) ** 2)))
+                    level_cb(max(mic_rms, loopback_rms))
+                except Exception as e:
+                    log.debug("Level callback failed: %s", e)
 
             stereo = np.column_stack([
                 mic_mono * self.gain,

@@ -67,8 +67,9 @@ def capture_worker(device_index, chunk_queue, stop_event):
             break
 
 
-def capture_worker_loopback(loopback_device_index, chunk_queue, stop_event):
-    """Record from WASAPI loopback only (PyAudioWPatch). Puts chunk paths into chunk_queue."""
+def capture_worker_loopback(loopback_device_index, chunk_queue, stop_event, level_queue=None):
+    """Record from WASAPI loopback only (PyAudioWPatch). Puts chunk paths into chunk_queue.
+    If level_queue is provided, pushes RMS (float) per read block for a level indicator."""
     if sys.platform != "win32":
         try:
             chunk_queue.put_nowait(("error", "Loopback is only supported on Windows with pyaudiowpatch."))
@@ -112,7 +113,16 @@ def capture_worker_loopback(loopback_device_index, chunk_queue, stop_event):
                     while len(buf) * 1024 < chunk_frames_loopback and not stop_event.is_set():
                         try:
                             data = stream.read(1024, exception_on_overflow=False)
-                            buf.append(np.frombuffer(data, dtype=np.int16))
+                            block = np.frombuffer(data, dtype=np.int16)
+                            buf.append(block)
+                            if level_queue is not None:
+                                mono = block.reshape(-1, ch).astype(np.float64) / 32768.0
+                                if mono.size:
+                                    rms = float(np.sqrt(np.mean(mono ** 2)))
+                                    try:
+                                        level_queue.put_nowait(rms)
+                                    except queue.Full:
+                                        pass
                         except Exception:
                             break
                 if stop_event.is_set():

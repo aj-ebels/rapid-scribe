@@ -8,7 +8,9 @@ import threading
 from datetime import date
 from pathlib import Path
 
+import numpy as np
 import customtkinter as ctk
+import sounddevice as sd
 from tkinter import messagebox, filedialog
 
 try:
@@ -57,8 +59,55 @@ def poll_text_queue(app):
             app.log.see("end")
     except queue.Empty:
         pass
+    # Drain live level updates and show latest
+    if getattr(app, "level_queue", None) is not None:
+        level = 0.0
+        try:
+            while True:
+                level = app.level_queue.get_nowait()
+        except queue.Empty:
+            pass
+        if getattr(app, "volume_bar", None) is not None:
+            try:
+                # Map RMS to 0..1 (speech roughly 0.01–0.3)
+                p = min(1.0, max(0.0, level / 0.25))
+                app.volume_bar.set(p)
+            except Exception:
+                pass
     if app.running:
         app.root.after(200, lambda: poll_text_queue(app))
+    else:
+        if getattr(app, "volume_bar", None) is not None:
+            try:
+                app.volume_bar.set(0)
+            except Exception:
+                pass
+
+
+def _level_monitor_worker(device_index, level_queue, stop_event):
+    """Run a lightweight input stream and push RMS levels to level_queue."""
+    try:
+        def callback(indata, _frames, _time, status):
+            if status:
+                return
+            rms = float(np.sqrt(np.mean(indata.astype(np.float64) ** 2)))
+            try:
+                level_queue.put_nowait(rms)
+            except queue.Full:
+                pass
+
+        with sd.InputStream(
+            device=device_index,
+            channels=1,
+            samplerate=SAMPLE_RATE,
+            blocksize=1024,
+            dtype=np.float32,
+            callback=callback,
+        ):
+            while not stop_event.wait(timeout=0.1):
+                pass
+    except Exception:
+        pass
 
 
 def _is_transcription_model_installed(app):
@@ -177,6 +226,12 @@ def start_stop(app):
         )
         app.capture_threads = [app.capture_thread]
         app.status_var.set("Recording & transcribing…")
+        app.level_thread = threading.Thread(
+            target=_level_monitor_worker,
+            args=(dev_idx, app.level_queue, app.stop_event),
+            daemon=True,
+        )
+        app.level_thread.start()
     elif mode == AUDIO_MODE_LOOPBACK:
         if sys.platform != "win32":
             app.log.insert("end", "[Loopback] Only supported on Windows with pyaudiowpatch.\n")
@@ -184,7 +239,7 @@ def start_stop(app):
             return
         app.capture_thread = threading.Thread(
             target=capture_worker_loopback,
-            args=(loopback_idx, app.chunk_queue, app.stop_event),
+            args=(loopback_idx, app.chunk_queue, app.stop_event, app.level_queue),
             daemon=True,
         )
         app.capture_threads = [app.capture_thread]
@@ -210,6 +265,12 @@ def start_stop(app):
                 gain=MIXER_GAIN_MEETING,
             )
             app.mixer.set_stereo_callback(app.recorder.push_stereo)
+            def _push_level(rms):
+                try:
+                    app.level_queue.put_nowait(rms)
+                except queue.Full:
+                    pass
+            app.mixer.set_level_callback(_push_level)
             app.mixer.start(loopback_device_index=loopback_idx, mic_device_index=None)
             app.capture_thread = None
             app.capture_threads = []
@@ -481,6 +542,7 @@ def main():
     app.stop_event = threading.Event()
     app.chunk_queue = queue.Queue(maxsize=1)
     app.text_queue = queue.Queue()
+    app.level_queue = queue.Queue(maxsize=32)
     app.capture_thread = None
     app.transcription_thread = None
     app.capture_threads = []
@@ -529,6 +591,12 @@ def main():
     app.status_var = ctk.StringVar(value="Loading model…")
     ctk.CTkLabel(header, textvariable=app.status_var, font=ctk.CTkFont(family=UI_FONT_FAMILY, size=F.header, weight="bold")).pack(side="left", padx=UI_PAD_LG, pady=UI_PAD)
     app.model_status_var = ctk.StringVar(value="")
+    # Live input volume indicator (small bar, right of status)
+    vol_frame = ctk.CTkFrame(header, fg_color="transparent")
+    vol_frame.pack(side="right", padx=(0, UI_PAD), pady=UI_PAD)
+    app.volume_bar = ctk.CTkProgressBar(vol_frame, width=72, height=5, corner_radius=3, progress_color=COLORS["primary_fg"], fg_color=("gray88", "gray28"))
+    app.volume_bar.set(0)
+    app.volume_bar.pack(side="right")
     btn_frame = ctk.CTkFrame(header, fg_color="transparent")
     btn_frame.pack(side="right", padx=UI_PAD_LG, pady=UI_PAD)
     if _use_image_buttons:
