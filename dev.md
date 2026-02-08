@@ -16,4 +16,4 @@ pip install -r requirements.txt -r requirements-build.txt
 pyinstaller meetings.spec
 ```
 
-Then share the `dist\Meetings` folder (or create an installer with Inno Setup as described in PACKAGING.md).
+Then share the `dist\Blue Bridge Meeting Companion` folder (or build the installer: open `installer.iss` in Inno Setup and Compile; see PACKAGING.md).

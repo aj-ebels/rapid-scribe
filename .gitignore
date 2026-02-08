@@ -1,6 +1,7 @@
 .venv
 build/
 dist/
+installer_output/
 prompts.json
 .env
 __pycache__/
