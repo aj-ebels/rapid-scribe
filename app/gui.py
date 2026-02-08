@@ -250,7 +250,7 @@ def _open_edit_prompt_dialog(parent, prompt_id, on_saved, ui_pad, ui_radius, fon
 
     win = ctk.CTkToplevel(parent)
     win.title("Add prompt" if is_new else "Edit prompt")
-    win.geometry("520x380")
+    win.geometry("520x520")
     win.transient(parent)
     def _set_grab():
         try:
@@ -265,8 +265,8 @@ def _open_edit_prompt_dialog(parent, prompt_id, on_saved, ui_pad, ui_radius, fon
     name_entry.pack(anchor="w", padx=ui_pad, pady=(0, ui_pad))
     name_entry.insert(0, name_var.get())
 
-    ctk.CTkLabel(win, text=f"Prompt: use {TRANSCRIPT_PLACEHOLDER} for the transcript, {MANUAL_NOTES_PLACEHOLDER} for manual notes from the Transcript tab.", font=ctk.CTkFont(family=font_family, size=font_sizes.small)).pack(anchor="w", padx=ui_pad, pady=(ui_pad, 2))
-    prompt_text = ctk.CTkTextbox(win, width=500, height=180, font=ctk.CTkFont(family=font_family, size=font_sizes.small))
+    ctk.CTkLabel(win, text=f"Prompt: use {TRANSCRIPT_PLACEHOLDER} for the transcript, {MANUAL_NOTES_PLACEHOLDER} for manual notes from the Transcript tab.", font=ctk.CTkFont(family=font_family, size=font_sizes.small), wraplength=400, anchor="center").pack(anchor="center", padx=ui_pad, pady=(ui_pad, 2))
+    prompt_text = ctk.CTkTextbox(win, width=500, height=320, font=ctk.CTkFont(family=font_family, size=font_sizes.small))
     prompt_text.pack(anchor="w", padx=ui_pad, pady=(0, ui_pad))
     if prompt:
         prompt_text.insert("1.0", prompt.get("prompt", ""))
@@ -578,7 +578,7 @@ def main():
     notes_header = ctk.CTkFrame(notes_panel, fg_color="transparent")
     notes_header.pack(fill="x", pady=(0, 4))
     ctk.CTkLabel(notes_header, text="Manual Notes", font=ctk.CTkFont(family=UI_FONT_FAMILY, size=F.header, weight="bold")).pack(side="left")
-    ctk.CTkLabel(notes_panel, text=f"Use {MANUAL_NOTES_PLACEHOLDER} in AI Prompts to include these notes in the summary.", font=ctk.CTkFont(family=UI_FONT_FAMILY, size=F.tiny), text_color="gray", wraplength=280, anchor="w").pack(anchor="w", pady=(0, 4))
+    ctk.CTkLabel(notes_panel, text=f"Notes will be included in the AI summary.", font=ctk.CTkFont(family=UI_FONT_FAMILY, size=F.tiny), text_color="gray", wraplength=400, anchor="w").pack(anchor="w", pady=(0, 4))
     app.manual_notes = ctk.CTkTextbox(notes_panel, wrap="word", font=ctk.CTkFont(family=MONO_FONT_FAMILY, size=F.body), corner_radius=8, border_width=0, fg_color=COLORS["textbox_bg"], border_spacing=UI_PAD)
     app.manual_notes.pack(fill="both", expand=True, pady=(0, UI_PAD))
 
@@ -610,7 +610,7 @@ def main():
     _prompts_for_summary = load_prompts()
     _prompt_names = [p.get("name", "Unnamed") for p in _prompts_for_summary] or ["(No prompts — add in AI Prompts tab)"]
     app.summary_prompt_var = ctk.StringVar(value=_prompt_names[0])
-    app.summary_prompt_menu = ctk.CTkOptionMenu(summary_header, values=_prompt_names, variable=app.summary_prompt_var, width=220, font=ctk.CTkFont(family=UI_FONT_FAMILY, size=F.small))
+    app.summary_prompt_menu = ctk.CTkOptionMenu(summary_header, values=_prompt_names, variable=app.summary_prompt_var, width=150, font=ctk.CTkFont(family=UI_FONT_FAMILY, size=F.small))
     app.summary_prompt_menu.pack(side="left", padx=(UI_PAD, 0), pady=4)
     app.summary_status_var = ctk.StringVar(value="")
     ctk.CTkLabel(summary_header, textvariable=app.summary_status_var, font=ctk.CTkFont(family=UI_FONT_FAMILY, size=F.small), text_color="gray").pack(side="left", padx=(UI_PAD, 0), pady=4)
