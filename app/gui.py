@@ -572,27 +572,31 @@ def main():
     refresh_models_tab()
 
     # Transcript tab — three equal-width columns: Manual Notes | Transcript | AI Summary
+    # Use a 3-row grid so the large text boxes align across columns (row 2).
     card = ctk.CTkFrame(tab_transcript, fg_color="transparent")
     card.pack(fill="both", expand=True)
     for col in (0, 1, 2):
         card.grid_columnconfigure(col, weight=1, uniform="transcript_cols")
-    card.grid_rowconfigure(0, weight=1)
+    card.grid_rowconfigure(0, weight=0)
+    card.grid_rowconfigure(1, weight=0)
+    card.grid_rowconfigure(2, weight=1)
 
-    # Manual Notes (left, 1/3)
-    notes_panel = ctk.CTkFrame(card, fg_color="transparent")
-    notes_panel.grid(row=0, column=0, sticky="nsew", padx=(UI_PAD_LG, UI_PAD))
-    notes_header = ctk.CTkFrame(notes_panel, fg_color="transparent")
-    notes_header.pack(fill="x", pady=(0, 4))
+    PAD_BELOW_SUBHEADER = 8   # padding below Transcript (and Manual Notes) sub-header
+    PAD_BELOW_AUTO_CHECKBOX = 4   # smaller padding below auto-generate checkbox
+
+    # Manual Notes (left column)
+    notes_header = ctk.CTkFrame(card, fg_color="transparent")
+    notes_header.grid(row=0, column=0, sticky="ew", padx=(UI_PAD_LG, UI_PAD))
     ctk.CTkLabel(notes_header, text="Manual Notes", font=ctk.CTkFont(family=UI_FONT_FAMILY, size=F.header, weight="bold")).pack(side="left")
-    ctk.CTkLabel(notes_panel, text=f"Notes will be included in the AI summary.", font=ctk.CTkFont(family=UI_FONT_FAMILY, size=F.tiny), text_color="gray", wraplength=400, anchor="w").pack(anchor="w", pady=(0, 4))
-    app.manual_notes = ctk.CTkTextbox(notes_panel, wrap="word", font=ctk.CTkFont(family=MONO_FONT_FAMILY, size=F.body), corner_radius=8, border_width=0, fg_color=COLORS["textbox_bg"], border_spacing=UI_PAD)
-    app.manual_notes.pack(fill="both", expand=True, pady=(0, UI_PAD))
+    notes_sub = ctk.CTkFrame(card, fg_color="transparent")
+    notes_sub.grid(row=1, column=0, sticky="ew", padx=(UI_PAD_LG, UI_PAD), pady=(0, PAD_BELOW_SUBHEADER))
+    ctk.CTkLabel(notes_sub, text="Notes will be included in the AI summary.", font=ctk.CTkFont(family=UI_FONT_FAMILY, size=F.tiny), text_color="gray", wraplength=400, anchor="w").pack(anchor="w")
+    app.manual_notes = ctk.CTkTextbox(card, wrap="word", font=ctk.CTkFont(family=MONO_FONT_FAMILY, size=F.body), corner_radius=8, border_width=0, fg_color=COLORS["textbox_bg"], border_spacing=UI_PAD)
+    app.manual_notes.grid(row=2, column=0, sticky="nsew", padx=(UI_PAD_LG, UI_PAD), pady=(0, UI_PAD))
 
-    # Transcript (middle, 1/3)
-    transcript_panel = ctk.CTkFrame(card, fg_color="transparent")
-    transcript_panel.grid(row=0, column=1, sticky="nsew", padx=UI_PAD)
-    card_header = ctk.CTkFrame(transcript_panel, fg_color="transparent")
-    card_header.pack(fill="x", pady=(0, 4))
+    # Transcript (middle column)
+    card_header = ctk.CTkFrame(card, fg_color="transparent")
+    card_header.grid(row=0, column=1, sticky="ew", padx=UI_PAD)
     ctk.CTkLabel(card_header, text="Transcript", font=ctk.CTkFont(family=UI_FONT_FAMILY, size=F.header, weight="bold")).pack(side="left")
     def copy_transcript():
         text = app.log.get("1.0", "end").rstrip()
@@ -604,15 +608,15 @@ def main():
         app.log.delete("1.0", "end")
     ctk.CTkButton(card_header, text="Copy transcript", font=ctk.CTkFont(family=UI_FONT_FAMILY, size=F.small), width=120, height=28, corner_radius=UI_RADIUS, fg_color=COLORS["secondary_fg"], hover_color=COLORS["secondary_hover"], command=copy_transcript).pack(side="left", padx=(UI_PAD, 0), pady=4)
     ctk.CTkButton(card_header, text="Clear", font=ctk.CTkFont(family=UI_FONT_FAMILY, size=F.small), width=80, height=28, corner_radius=UI_RADIUS, fg_color=COLORS["secondary_fg"], hover_color=COLORS["secondary_hover"], command=clear_transcript).pack(side="right", padx=UI_PAD, pady=4)
-    ctk.CTkLabel(transcript_panel, text="Transcript will be included in the AI summary.", font=ctk.CTkFont(family=UI_FONT_FAMILY, size=F.tiny), text_color="gray", wraplength=400, anchor="w").pack(anchor="w", pady=(0, 4))
-    app.log = ctk.CTkTextbox(transcript_panel, wrap="word", font=ctk.CTkFont(family=MONO_FONT_FAMILY, size=F.body), corner_radius=8, border_width=0, fg_color=COLORS["textbox_bg"], border_spacing=UI_PAD)
-    app.log.pack(fill="both", expand=True, pady=(0, UI_PAD))
+    transcript_sub = ctk.CTkFrame(card, fg_color="transparent")
+    transcript_sub.grid(row=1, column=1, sticky="ew", padx=UI_PAD, pady=(0, PAD_BELOW_SUBHEADER))
+    ctk.CTkLabel(transcript_sub, text="Transcript will be included in the AI summary.", font=ctk.CTkFont(family=UI_FONT_FAMILY, size=F.tiny), text_color="gray", wraplength=400, anchor="w").pack(anchor="w")
+    app.log = ctk.CTkTextbox(card, wrap="word", font=ctk.CTkFont(family=MONO_FONT_FAMILY, size=F.body), corner_radius=8, border_width=0, fg_color=COLORS["textbox_bg"], border_spacing=UI_PAD)
+    app.log.grid(row=2, column=1, sticky="nsew", padx=UI_PAD, pady=(0, UI_PAD))
 
-    # AI Summary (right, 1/3)
-    summary_panel = ctk.CTkFrame(card, fg_color="transparent")
-    summary_panel.grid(row=0, column=2, sticky="nsew", padx=(UI_PAD, UI_PAD_LG))
-    summary_header = ctk.CTkFrame(summary_panel, fg_color="transparent")
-    summary_header.pack(fill="x", pady=(0, 4))
+    # AI Summary (right column)
+    summary_header = ctk.CTkFrame(card, fg_color="transparent")
+    summary_header.grid(row=0, column=2, sticky="ew", padx=(UI_PAD, UI_PAD_LG))
     ctk.CTkLabel(summary_header, text="AI Summary", font=ctk.CTkFont(family=UI_FONT_FAMILY, size=F.header, weight="bold")).pack(side="left")
     _prompts_for_summary = load_prompts()
     _prompt_names = [p.get("name", "Unnamed") for p in _prompts_for_summary] or ["(No prompts — add in AI Prompts tab)"]
@@ -626,8 +630,8 @@ def main():
     def _on_auto_summary_when_stopping_changed():
         app.settings["auto_generate_summary_when_stopping"] = app.auto_generate_summary_when_stopping_var.get()
         save_settings(app.settings)
-    summary_options_row = ctk.CTkFrame(summary_panel, fg_color="transparent")
-    summary_options_row.pack(fill="x", pady=(0, 4))
+    summary_options_row = ctk.CTkFrame(card, fg_color="transparent")
+    summary_options_row.grid(row=1, column=2, sticky="ew", padx=(UI_PAD, UI_PAD_LG), pady=(0, PAD_BELOW_AUTO_CHECKBOX))
     ctk.CTkCheckBox(
         summary_options_row, text="Auto-generate summary when recording stops", variable=app.auto_generate_summary_when_stopping_var,
         font=ctk.CTkFont(family=UI_FONT_FAMILY, size=F.small), command=_on_auto_summary_when_stopping_changed
@@ -738,8 +742,8 @@ def main():
         except Exception as e:
             messagebox.showerror("Export failed", str(e), parent=root)
 
-    app.summary_text = ctk.CTkTextbox(summary_panel, wrap="word", font=ctk.CTkFont(family=MONO_FONT_FAMILY, size=F.body), corner_radius=8, border_width=0, fg_color=COLORS["textbox_bg"], border_spacing=UI_PAD)
-    app.summary_text.pack(fill="both", expand=True, pady=(0, UI_PAD))
+    app.summary_text = ctk.CTkTextbox(card, wrap="word", font=ctk.CTkFont(family=MONO_FONT_FAMILY, size=F.body), corner_radius=8, border_width=0, fg_color=COLORS["textbox_bg"], border_spacing=UI_PAD)
+    app.summary_text.grid(row=2, column=2, sticky="nsew", padx=(UI_PAD, UI_PAD_LG), pady=(0, UI_PAD))
 
     export_row = ctk.CTkFrame(tab_transcript, fg_color="transparent")
     export_row.pack(fill="x", pady=(UI_PAD, UI_PAD_LG), padx=UI_PAD_LG)
