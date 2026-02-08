@@ -602,8 +602,8 @@ def main():
             root.update()
     def clear_transcript():
         app.log.delete("1.0", "end")
-    ctk.CTkButton(card_header, text="Copy transcript", font=ctk.CTkFont(family=UI_FONT_FAMILY, size=F.small), width=140, height=36, corner_radius=UI_RADIUS, fg_color=COLORS["secondary_fg"], hover_color=COLORS["secondary_hover"], command=copy_transcript).pack(side="left", padx=(UI_PAD, 0), pady=4)
-    ctk.CTkButton(card_header, text="Clear", font=ctk.CTkFont(family=UI_FONT_FAMILY, size=F.small), width=80, height=36, corner_radius=UI_RADIUS, fg_color=COLORS["secondary_fg"], hover_color=COLORS["secondary_hover"], command=clear_transcript).pack(side="right", padx=UI_PAD, pady=4)
+    ctk.CTkButton(card_header, text="Copy transcript", font=ctk.CTkFont(family=UI_FONT_FAMILY, size=F.small), width=120, height=28, corner_radius=UI_RADIUS, fg_color=COLORS["secondary_fg"], hover_color=COLORS["secondary_hover"], command=copy_transcript).pack(side="left", padx=(UI_PAD, 0), pady=4)
+    ctk.CTkButton(card_header, text="Clear", font=ctk.CTkFont(family=UI_FONT_FAMILY, size=F.small), width=80, height=28, corner_radius=UI_RADIUS, fg_color=COLORS["secondary_fg"], hover_color=COLORS["secondary_hover"], command=clear_transcript).pack(side="right", padx=UI_PAD, pady=4)
     ctk.CTkLabel(transcript_panel, text="Transcript will be included in the AI summary.", font=ctk.CTkFont(family=UI_FONT_FAMILY, size=F.tiny), text_color="gray", wraplength=400, anchor="w").pack(anchor="w", pady=(0, 4))
     app.log = ctk.CTkTextbox(transcript_panel, wrap="word", font=ctk.CTkFont(family=MONO_FONT_FAMILY, size=F.body), corner_radius=8, border_width=0, fg_color=COLORS["textbox_bg"], border_spacing=UI_PAD)
     app.log.pack(fill="both", expand=True, pady=(0, UI_PAD))
@@ -699,7 +699,7 @@ def main():
         root.after(200, check_done)
 
     app._do_ai_summary = _do_ai_summary
-    app.summary_generate_btn = ctk.CTkButton(summary_header, text="Generate", font=ctk.CTkFont(family=UI_FONT_FAMILY, size=F.small), width=100, height=36, corner_radius=UI_RADIUS, fg_color=COLORS["primary_fg"], hover_color=COLORS["primary_hover"], command=_do_ai_summary)
+    app.summary_generate_btn = ctk.CTkButton(summary_header, text="Generate", font=ctk.CTkFont(family=UI_FONT_FAMILY, size=F.small), width=80, height=28, corner_radius=UI_RADIUS, fg_color=COLORS["primary_fg"], hover_color=COLORS["primary_hover"], command=_do_ai_summary)
     app.summary_generate_btn.pack(side="left", padx=(UI_PAD, 0), pady=4)
 
     def _export_markdown():
