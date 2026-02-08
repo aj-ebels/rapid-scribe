@@ -81,7 +81,8 @@ def generate_export_name(api_key, summary_excerpt):
     try:
         client = OpenAI(api_key=api_key)
         response = client.chat.completions.create(
-            model="gpt-4o-mini",
+            model="gpt-5.2",
+            reasoning_effort="low",
             messages=[{"role": "user", "content": prompt}],
         )
         content = (response.choices[0].message.content or "").strip()

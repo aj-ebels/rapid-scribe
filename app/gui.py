@@ -721,11 +721,11 @@ def main():
         # Order: AI Summary → Manual Notes → Full Transcript
         parts = []
         if summary:
-            parts.append("## AI Summary\n\n" + summary)
+            parts.append("# AI Summary\n\n" + summary)
         if manual_notes:
-            parts.append("## Manual Notes\n\n" + manual_notes)
+            parts.append("# Manual Notes\n\n" + manual_notes)
         if transcript:
-            parts.append("## Full Transcript\n\n" + transcript)
+            parts.append("# Full Transcript\n\n" + transcript)
         content = "\n\n---\n\n".join(parts) + "\n"
         try:
             with open(path, "w", encoding="utf-8") as f:
