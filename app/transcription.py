@@ -155,8 +155,12 @@ def uninstall_transcription_model(repo_id, revision_hashes):
         return False, str(e)
 
 
+# Chunks with RMS below this are not transcribed (reduces ASR hallucination on near-silence).
+MIN_RMS_TRANSCRIBE = 0.005
+
+
 def transcription_worker(chunk_queue, text_queue, stop_event, model_id=None):
-    """Take WAV paths from chunk_queue, transcribe with selected model, push text to text_queue, delete file."""
+    """Take WAV paths (or (path, rms)) from chunk_queue, transcribe with selected model, push text to text_queue, delete file."""
     try:
         model = get_transcription_model(model_id or PARAKEET_MODEL)
         diag("transcription_model_loaded", model_id=model_id or PARAKEET_MODEL)
@@ -172,7 +176,15 @@ def transcription_worker(chunk_queue, text_queue, stop_event, model_id=None):
                 diag("transcription_received_error", msg=item[1])
                 text_queue.put_nowait(("[Error] " + item[1] + "\n"))
                 continue
-            path = item
+            path = item[0] if isinstance(item, tuple) and len(item) >= 1 else item
+            rms = item[1] if isinstance(item, tuple) and len(item) >= 2 else None
+            if rms is not None and rms < MIN_RMS_TRANSCRIBE:
+                diag("transcription_skipped_low_rms", path=path, rms=rms, threshold=MIN_RMS_TRANSCRIBE)
+                try:
+                    Path(path).unlink(missing_ok=True)
+                except Exception:
+                    pass
+                continue
             diag("transcription_got_path", path=path, exists=Path(path).exists())
             if not Path(path).exists():
                 continue

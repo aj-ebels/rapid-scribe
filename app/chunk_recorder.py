@@ -20,7 +20,7 @@ def _ensure_dir(path: str):
     os.makedirs(path, exist_ok=True)
 
 
-def _is_silent_block(stereo_frames: np.ndarray, threshold: float = 0.01) -> bool:
+def _is_silent_block(stereo_frames: np.ndarray, threshold: float = 0.005) -> bool:
     """True if the block has very low energy (mono RMS below threshold)."""
     mono = np.mean(stereo_frames, axis=1).astype(np.float64)
     rms = np.sqrt(np.mean(mono ** 2))
@@ -48,7 +48,7 @@ class ChunkRecorder:
         min_chunk_sec: float = 1.5,
         max_chunk_sec: float = 8.0,
         silence_duration_sec: float = 0.5,
-        silence_rms_threshold: float = 0.01,
+        silence_rms_threshold: float = 0.005,
     ):
         self.sample_rate = sample_rate
         self.asr_sample_rate = asr_sample_rate
@@ -134,6 +134,7 @@ class ChunkRecorder:
         if self.sample_rate != self.asr_sample_rate:
             num_out = int(len(mono) * self.asr_sample_rate / self.sample_rate)
             mono = resample(mono, num_out).astype(np.float32)
+        chunk_rms = float(np.sqrt(np.mean(mono.astype(np.float64) ** 2)))
         mono_int16 = (np.clip(mono, -1.0, 1.0) * 32767).astype(np.int16)
         wav_path = os.path.join(self.temp_dir, f"chunk_{uuid.uuid4().hex}.wav")
         try:
@@ -155,7 +156,7 @@ class ChunkRecorder:
         cb = self.on_chunk_ready
         if cb is not None:
             try:
-                cb(wav_path)
+                cb(wav_path, chunk_rms)
             except Exception as e:
                 try:
                     from diagnostic import write as diag

@@ -69,8 +69,8 @@ def poll_text_queue(app):
             pass
         if getattr(app, "volume_bar", None) is not None:
             try:
-                # Map RMS to 0..1 (speech roughly 0.01–0.3)
-                p = min(1.0, max(0.0, level / 0.25))
+                # Map RMS to 0..1 (speech roughly 0.005–0.3)
+                p = min(1.0, max(0.0, level / 0.3))
                 app.volume_bar.set(p)
             except Exception:
                 pass
@@ -269,7 +269,7 @@ def start_stop(app):
                 sample_rate=CAPTURE_SAMPLE_RATE_MEETING,
                 chunk_duration_sec=float(chunk_sec),
                 asr_sample_rate=SAMPLE_RATE,
-                on_chunk_ready=lambda wav_path: meeting_chunk_ready(app, wav_path),
+                on_chunk_ready=lambda wav_path, rms: meeting_chunk_ready(app, wav_path, rms),
                 use_silence_chunking=use_silence,
                 min_chunk_sec=float(min_sec),
                 max_chunk_sec=float(max_sec),

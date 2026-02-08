@@ -25,7 +25,7 @@ CAPTURE_SAMPLE_RATE_MEETING = 48000
 FRAMES_PER_READ_MEETING = 4096
 MIXER_GAIN_MEETING = 0.7
 CHUNK_PATH = Path(tempfile.gettempdir()) / "meetings_chunk.wav"
-SILENCE_RMS_THRESHOLD = 0.01
+SILENCE_RMS_THRESHOLD = 0.005
 
 
 def _is_silent(chunk: np.ndarray) -> bool:
@@ -50,10 +50,11 @@ def capture_worker(device_index, chunk_queue, stop_event):
                 break
             if _is_silent(chunk):
                 continue
+            rms = float(np.sqrt(np.mean(chunk.astype(np.float64) ** 2)))
             chunk_int16 = (np.clip(chunk, -1.0, 1.0) * 32767).astype(np.int16)
             wavfile.write(str(CHUNK_PATH), SAMPLE_RATE, chunk_int16)
             try:
-                chunk_queue.put(str(CHUNK_PATH), timeout=1.0)
+                chunk_queue.put((str(CHUNK_PATH), rms), timeout=1.0)
                 diag("chunk_queued", path=str(CHUNK_PATH), worker="default")
             except queue.Full:
                 pass
@@ -140,10 +141,11 @@ def capture_worker_loopback(loopback_device_index, chunk_queue, stop_event, leve
                     mono = np.pad(mono, (0, CHUNK_SAMPLES - len(mono)))
                 if _is_silent(mono):
                     continue
+                rms = float(np.sqrt(np.mean(mono.astype(np.float64) ** 2)))
                 chunk_int16 = (np.clip(mono, -1.0, 1.0) * 32767).astype(np.int16)
                 wavfile.write(str(CHUNK_PATH), SAMPLE_RATE, chunk_int16)
                 try:
-                    chunk_queue.put(str(CHUNK_PATH), timeout=1.0)
+                    chunk_queue.put((str(CHUNK_PATH), rms), timeout=1.0)
                     diag("chunk_queued", path=str(CHUNK_PATH), worker="loopback")
                 except queue.Full:
                     pass
@@ -156,14 +158,14 @@ def capture_worker_loopback(loopback_device_index, chunk_queue, stop_event, leve
                 pass
 
 
-def meeting_chunk_ready(app, wav_path: str):
-    """Callback from ChunkRecorder (in-process Meeting mode): queue WAV path for transcription."""
+def meeting_chunk_ready(app, wav_path: str, rms: float = None):
+    """Callback from ChunkRecorder (in-process Meeting mode): queue WAV path and RMS for transcription."""
     try:
         from diagnostic import write as diag
         diag("chunk_queued", path=wav_path, worker="meeting")
     except ImportError:
         pass
     try:
-        app.chunk_queue.put_nowait(wav_path)
+        app.chunk_queue.put_nowait((wav_path, rms) if rms is not None else wav_path)
     except queue.Full:
         pass
