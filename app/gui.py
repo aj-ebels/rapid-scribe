@@ -526,7 +526,7 @@ def main():
     header = ctk.CTkFrame(main_content, fg_color=COLORS["header"], corner_radius=UI_RADIUS, height=_header_height)
     header.pack(fill="x", pady=(0, UI_PAD))
     header.pack_propagate(False)
-    app.status_var = ctk.StringVar(value="Ready to record")
+    app.status_var = ctk.StringVar(value="Loading model…")
     ctk.CTkLabel(header, textvariable=app.status_var, font=ctk.CTkFont(family=UI_FONT_FAMILY, size=F.header, weight="bold")).pack(side="left", padx=UI_PAD_LG, pady=UI_PAD)
     app.model_status_var = ctk.StringVar(value="")
     btn_frame = ctk.CTkFrame(header, fg_color="transparent")
@@ -536,11 +536,11 @@ def main():
         _btn_h = max(_disp_rh, _disp_sh)
         app._record_ctk = ctk.CTkImage(light_image=_record_img, dark_image=_record_img, size=(_btn_w, _btn_h))
         app._stop_ctk = ctk.CTkImage(light_image=_stop_img, dark_image=_stop_img, size=(_btn_w, _btn_h))
-        app.start_btn = ctk.CTkButton(btn_frame, image=app._record_ctk, text="", command=lambda: start_stop(app), width=_btn_w, height=_btn_h, fg_color="transparent", hover_color=("gray85", "gray25"))
+        app.start_btn = ctk.CTkButton(btn_frame, image=app._record_ctk, text="", command=lambda: start_stop(app), width=_btn_w, height=_btn_h, fg_color="transparent", hover_color=("gray85", "gray25"), state="disabled")
         app.start_btn.pack(side="left")
         app.stop_btn = None
     else:
-        app.start_btn = ctk.CTkButton(btn_frame, text="Start", command=lambda: start_stop(app), font=ctk.CTkFont(family=UI_FONT_FAMILY, size=F.header, weight="bold"), width=100, height=36, corner_radius=UI_RADIUS, fg_color=COLORS["primary_fg"], hover_color=COLORS["primary_hover"])
+        app.start_btn = ctk.CTkButton(btn_frame, text="Start", command=lambda: start_stop(app), font=ctk.CTkFont(family=UI_FONT_FAMILY, size=F.header, weight="bold"), width=100, height=36, corner_radius=UI_RADIUS, fg_color=COLORS["primary_fg"], hover_color=COLORS["primary_hover"], state="disabled")
         app.start_btn.pack(side="left", padx=(0, UI_PAD))
         app.stop_btn = ctk.CTkButton(btn_frame, text="Stop", command=lambda: start_stop(app), state="disabled", font=ctk.CTkFont(family=UI_FONT_FAMILY, size=F.header, weight="bold"), width=100, height=36, corner_radius=UI_RADIUS, fg_color=COLORS["danger_fg"], hover_color=COLORS["danger_hover"])
         app.stop_btn.pack(side="left")
@@ -651,8 +651,12 @@ def main():
             messagebox.showerror("Error", err or "Failed to delete.", parent=app.root)
     ctk.CTkButton(installed_btn_row, text="Uninstall", font=ctk.CTkFont(family=UI_FONT_FAMILY, size=F.small), width=100, height=32, corner_radius=UI_RADIUS, fg_color=COLORS["danger_fg"], hover_color=COLORS["danger_hover"], command=_do_uninstall_model).pack(side="left")
 
-    def refresh_models_tab():
-        models, err = list_installed_transcription_models()
+    def refresh_models_tab(models_err=None):
+        """Refresh Model tab. If models_err is provided, use (models, err) instead of calling list_installed_transcription_models() on this thread."""
+        if models_err is not None:
+            models, err = models_err
+        else:
+            models, err = list_installed_transcription_models()
         installed_repo_ids = [m["repo_id"] for m in models] if models else []
         standard_installed = STANDARD_TRANSCRIPTION_MODEL in installed_repo_ids
         app.settings["transcription_model"] = STANDARD_TRANSCRIPTION_MODEL
@@ -673,7 +677,19 @@ def main():
                 app.install_model_status_var.set(f"Warning: {err[:80]}…" if len(err) > 80 else err)
         update_model_status(app)
 
-    refresh_models_tab()
+    def _startup_check_done(models_err):
+        """Called on main thread after background startup check; refreshes Model tab and enables Record when ready."""
+        refresh_models_tab(models_err=models_err)
+
+    def _run_startup_check():
+        """Run in background: scan cache then schedule UI update on main thread so app stays responsive."""
+        models_err = list_installed_transcription_models()
+        app.root.after(0, lambda: _startup_check_done(models_err))
+
+    # Defer model check to background so the window appears immediately and stays responsive.
+    # Record button stays disabled until update_model_status() runs (after check and optional model load).
+    app.model_status_var.set("Transcription model: Loading…")
+    threading.Thread(target=_run_startup_check, daemon=True).start()
 
     # Transcript tab — three equal-width columns: Manual Notes | Transcript | AI Summary
     # Use a 3-row grid so the large text boxes align across columns (row 2).
@@ -1021,7 +1037,7 @@ def main():
     app.model_status_warning_color = COLORS["error_text"][1]
     app.model_status_label = ctk.CTkLabel(main_content, textvariable=app.model_status_var, font=ctk.CTkFont(family=UI_FONT_FAMILY, size=F.small), text_color="gray", wraplength=700)
     app.model_status_label.pack(anchor="w", padx=UI_PAD_LG, pady=(0, UI_PAD))
-    update_model_status(app)
+    # Model status and Record button are updated by _startup_check_done after background check (and optional load).
 
     root.protocol("WM_DELETE_WINDOW", lambda: (app.stop_event.set(), root.destroy()))
     root.mainloop()
