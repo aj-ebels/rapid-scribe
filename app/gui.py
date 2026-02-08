@@ -1,6 +1,7 @@
 """
 GUI and app controller: CustomTkinter window, tabs, start/stop recording, prompts dialog.
 """
+import math
 import sys
 import queue
 import threading
@@ -112,7 +113,7 @@ def update_model_status(app):
         elif not loaded:
             app.status_var.set("Loading model…")
         else:
-            app.status_var.set("Ready to record")
+            app.status_var.set("Ready to record & transcribe")
     if getattr(app, "start_btn", None) is not None:
         app.start_btn.configure(state="normal" if ready else "disabled")
 
@@ -143,6 +144,9 @@ def start_stop(app):
             app.stop_btn.configure(state="disabled")
         elif getattr(app, "_record_ctk", None) is not None:
             app.start_btn.configure(image=app._record_ctk)
+        _clear = getattr(app, "_clear_transcript_pulse", None)
+        if _clear is not None:
+            _clear(app)
         app.status_var.set("Stopped")
         if getattr(app, "auto_generate_summary_when_stopping_var", None) and app.auto_generate_summary_when_stopping_var.get():
             if getattr(app, "_do_ai_summary", None):
@@ -238,6 +242,9 @@ def start_stop(app):
     )
     app.transcription_thread.start()
     app.running = True
+    _start = getattr(app, "_start_transcript_pulse", None)
+    if _start is not None:
+        _start(app)
     if getattr(app, "stop_btn", None) is not None:
         app.start_btn.configure(state="disabled")
         app.stop_btn.configure(state="normal")
@@ -356,6 +363,97 @@ def main():
         "error_text": ("red", "#f7768e"),
         "prompt_item_bg": ("gray90", "gray22"),
     }
+    # Subtle pulsing outline for recording (red) / generating (blue) states (smooth color transition)
+    PULSE_BORDER_RED_DIM = "#b44"
+    PULSE_BORDER_RED_BRIGHT = "#e88"
+    PULSE_BORDER_BLUE_DIM = "#48a"
+    PULSE_BORDER_BLUE_BRIGHT = "#8cf"
+    PULSE_BORDER_WIDTH = 2
+    PULSE_TICK_MS = 40
+    PULSE_CYCLE_SEC = 1.8
+
+    def _hex_to_rgb(hex_str):
+        h = hex_str.lstrip("#")
+        if len(h) == 3:
+            h = "".join(c * 2 for c in h)
+        return tuple(int(h[i : i + 2], 16) for i in (0, 2, 4))
+
+    def _rgb_to_hex(r, g, b):
+        return "#{:02x}{:02x}{:02x}".format(int(r), int(g), int(b))
+
+    _pulse_rgb_red_dim = _hex_to_rgb(PULSE_BORDER_RED_DIM)
+    _pulse_rgb_red_bright = _hex_to_rgb(PULSE_BORDER_RED_BRIGHT)
+    _pulse_rgb_blue_dim = _hex_to_rgb(PULSE_BORDER_BLUE_DIM)
+    _pulse_rgb_blue_bright = _hex_to_rgb(PULSE_BORDER_BLUE_BRIGHT)
+
+    def _pulse_color(phase_rad, dim_rgb, bright_rgb):
+        """Phase in radians; 0.5 + 0.5*sin(phase) gives smooth 0..1 blend."""
+        blend = 0.5 + 0.5 * math.sin(phase_rad)
+        r = dim_rgb[0] + (bright_rgb[0] - dim_rgb[0]) * blend
+        g = dim_rgb[1] + (bright_rgb[1] - dim_rgb[1]) * blend
+        b = dim_rgb[2] + (bright_rgb[2] - dim_rgb[2]) * blend
+        return _rgb_to_hex(r, g, b)
+
+    def _clear_transcript_pulse(app):
+        if getattr(app, "_transcript_pulse_id", None) is not None:
+            try:
+                app.root.after_cancel(app._transcript_pulse_id)
+            except Exception:
+                pass
+            app._transcript_pulse_id = None
+        if getattr(app, "log", None) is not None:
+            try:
+                app.log.configure(border_width=0)
+            except Exception:
+                pass
+
+    def _tick_transcript_pulse(app):
+        app._transcript_pulse_id = None
+        if not getattr(app, "running", False):
+            _clear_transcript_pulse(app)
+            return
+        phase = getattr(app, "_transcript_pulse_phase", 0.0)
+        try:
+            app.log.configure(border_width=PULSE_BORDER_WIDTH, border_color=_pulse_color(phase, _pulse_rgb_red_dim, _pulse_rgb_red_bright))
+        except Exception:
+            pass
+        app._transcript_pulse_phase = phase + (2 * math.pi * PULSE_TICK_MS / 1000.0 / PULSE_CYCLE_SEC)
+        app._transcript_pulse_id = app.root.after(PULSE_TICK_MS, lambda: _tick_transcript_pulse(app))
+
+    def _start_transcript_pulse(app):
+        app._transcript_pulse_phase = 0.0
+        _tick_transcript_pulse(app)
+
+    def _clear_summary_pulse(app):
+        if getattr(app, "_summary_pulse_id", None) is not None:
+            try:
+                app.root.after_cancel(app._summary_pulse_id)
+            except Exception:
+                pass
+            app._summary_pulse_id = None
+        if getattr(app, "summary_text", None) is not None:
+            try:
+                app.summary_text.configure(border_width=0)
+            except Exception:
+                pass
+
+    def _tick_summary_pulse(app):
+        app._summary_pulse_id = None
+        if not getattr(app, "_summary_generating", False):
+            _clear_summary_pulse(app)
+            return
+        phase = getattr(app, "_summary_pulse_phase", 0.0)
+        try:
+            app.summary_text.configure(border_width=PULSE_BORDER_WIDTH, border_color=_pulse_color(phase, _pulse_rgb_blue_dim, _pulse_rgb_blue_bright))
+        except Exception:
+            pass
+        app._summary_pulse_phase = phase + (2 * math.pi * PULSE_TICK_MS / 1000.0 / PULSE_CYCLE_SEC)
+        app._summary_pulse_id = app.root.after(PULSE_TICK_MS, lambda: _tick_summary_pulse(app))
+
+    def _start_summary_pulse(app):
+        app._summary_pulse_phase = 0.0
+        _tick_summary_pulse(app)
+
     if sys.platform == "win32":
         UI_FONT_FAMILY = "Segoe UI"
         MONO_FONT_FAMILY = "Consolas"
@@ -387,6 +485,12 @@ def main():
     app.transcription_thread = None
     app.capture_threads = []
     app.settings = load_settings()
+
+    # Attach pulse helpers to app so module-level start_stop() can call them
+    app._start_transcript_pulse = _start_transcript_pulse
+    app._clear_transcript_pulse = _clear_transcript_pulse
+    app._start_summary_pulse = _start_summary_pulse
+    app._clear_summary_pulse = _clear_summary_pulse
 
     content_frame = ctk.CTkFrame(root, fg_color="transparent")
     content_frame.pack(fill="both", expand=True, padx=UI_PAD, pady=UI_PAD)
@@ -670,6 +774,8 @@ def main():
         manual_notes = app.manual_notes.get("1.0", "end").strip()
         app.summary_generate_btn.configure(state="disabled")
         app.summary_status_var.set("Generating…")
+        app._summary_generating = True
+        _start_summary_pulse(app)
         result_holder = []
         want_auto_name = (
             not (app.export_name_var.get() or "").strip()
@@ -688,6 +794,8 @@ def main():
                 root.after(200, check_done)
                 return
             ok, out, generated_name = result_holder[0]
+            app._summary_generating = False
+            _clear_summary_pulse(app)
             app.summary_generate_btn.configure(state="normal")
             app.summary_status_var.set("")
             if ok:

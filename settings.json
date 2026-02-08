@@ -6,5 +6,5 @@
   "chunk_duration_sec": 5.0,
   "auto_generate_export_name": true,
   "export_prepend_date": true,
-  "auto_generate_summary_when_stopping": true
+  "auto_generate_summary_when_stopping": false
 }
