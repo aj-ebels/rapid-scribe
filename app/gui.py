@@ -649,7 +649,7 @@ def main():
             update_model_status(app)
         else:
             messagebox.showerror("Error", err or "Failed to delete.", parent=app.root)
-    ctk.CTkButton(installed_btn_row, text="Uninstall", font=ctk.CTkFont(family=UI_FONT_FAMILY, size=F.small), width=100, height=32, corner_radius=UI_RADIUS, fg_color=COLORS["danger_fg"], hover_color=COLORS["danger_hover"], command=_do_uninstall_model).pack(side="left")
+    ctk.CTkButton(installed_btn_row, text="Uninstall", font=ctk.CTkFont(family=UI_FONT_FAMILY, size=F.small), width=84, height=32, corner_radius=UI_RADIUS, fg_color=COLORS["danger_fg"], hover_color=COLORS["danger_hover"], command=_do_uninstall_model).pack(side="left")
 
     def refresh_models_tab(models_err=None):
         """Refresh Model tab. If models_err is provided, use (models, err) instead of calling list_installed_transcription_models() on this thread."""
@@ -726,8 +726,8 @@ def main():
             root.update()
     def clear_transcript():
         app.log.delete("1.0", "end")
-    ctk.CTkButton(card_header, text="Copy transcript", font=ctk.CTkFont(family=UI_FONT_FAMILY, size=F.small), width=120, height=28, corner_radius=UI_RADIUS, fg_color=COLORS["secondary_fg"], hover_color=COLORS["secondary_hover"], command=copy_transcript).pack(side="left", padx=(UI_PAD, 0), pady=4)
-    ctk.CTkButton(card_header, text="Clear", font=ctk.CTkFont(family=UI_FONT_FAMILY, size=F.small), width=80, height=28, corner_radius=UI_RADIUS, fg_color=COLORS["secondary_fg"], hover_color=COLORS["secondary_hover"], command=clear_transcript).pack(side="right", padx=UI_PAD, pady=4)
+    ctk.CTkButton(card_header, text="Copy transcript", font=ctk.CTkFont(family=UI_FONT_FAMILY, size=F.small), width=100, height=28, corner_radius=UI_RADIUS, fg_color=COLORS["secondary_fg"], hover_color=COLORS["secondary_hover"], command=copy_transcript).pack(side="left", padx=(UI_PAD, 0), pady=4)
+    ctk.CTkButton(card_header, text="Clear", font=ctk.CTkFont(family=UI_FONT_FAMILY, size=F.small), width=50, height=28, corner_radius=UI_RADIUS, fg_color=COLORS["secondary_fg"], hover_color=COLORS["secondary_hover"], command=clear_transcript).pack(side="right", padx=UI_PAD, pady=4)
     transcript_sub = ctk.CTkFrame(card, fg_color="transparent")
     transcript_sub.grid(row=1, column=1, sticky="ew", padx=UI_PAD, pady=(0, PAD_BELOW_SUBHEADER))
     ctk.CTkLabel(transcript_sub, text="Transcript will be included in the AI summary.", font=ctk.CTkFont(family=UI_FONT_FAMILY, size=F.tiny), text_color="gray", wraplength=400, anchor="w").pack(anchor="w")
@@ -828,7 +828,7 @@ def main():
         root.after(200, check_done)
 
     app._do_ai_summary = _do_ai_summary
-    app.summary_generate_btn = ctk.CTkButton(summary_header, text="Generate", font=ctk.CTkFont(family=UI_FONT_FAMILY, size=F.small), width=80, height=28, corner_radius=UI_RADIUS, fg_color=COLORS["primary_fg"], hover_color=COLORS["primary_hover"], command=_do_ai_summary)
+    app.summary_generate_btn = ctk.CTkButton(summary_header, text="Generate", font=ctk.CTkFont(family=UI_FONT_FAMILY, size=F.small), width=74, height=28, corner_radius=UI_RADIUS, fg_color=COLORS["primary_fg"], hover_color=COLORS["primary_hover"], command=_do_ai_summary)
     app.summary_generate_btn.pack(side="left", padx=(UI_PAD, 0), pady=4)
 
     def _export_markdown():
@@ -894,7 +894,7 @@ def main():
         border_width=1, corner_radius=3, checkbox_width=18, checkbox_height=18
     )
     app.auto_generate_export_name_cb.pack(side="left", padx=8, pady=4)
-    ctk.CTkButton(export_row, text="Export", font=ctk.CTkFont(family=UI_FONT_FAMILY, size=F.small), width=80, height=28, corner_radius=UI_RADIUS, fg_color=COLORS["secondary_fg"], hover_color=COLORS["secondary_hover"], command=_export_markdown).pack(side="left", padx=(0, 0), pady=4)
+    ctk.CTkButton(export_row, text="Export", font=ctk.CTkFont(family=UI_FONT_FAMILY, size=F.small), width=64, height=28, corner_radius=UI_RADIUS, fg_color=COLORS["secondary_fg"], hover_color=COLORS["secondary_hover"], command=_export_markdown).pack(side="left", padx=(0, 0), pady=4)
 
     # AI Prompts tab
     prompts_header = ctk.CTkFrame(tab_prompts, fg_color="transparent")
@@ -922,13 +922,13 @@ def main():
                 if delete_prompt(pid):
                     refresh_prompts_list()
                     messagebox.showinfo("Deleted", "Prompt deleted.")
-            ctk.CTkButton(row, text="Edit", width=60, height=28, font=ctk.CTkFont(family=UI_FONT_FAMILY, size=F.tiny), corner_radius=UI_RADIUS, fg_color=COLORS["secondary_fg"], hover_color=COLORS["secondary_hover"], command=_edit).pack(side="right", padx=4, pady=UI_PAD)
-            ctk.CTkButton(row, text="Delete", width=60, height=28, font=ctk.CTkFont(family=UI_FONT_FAMILY, size=F.tiny), corner_radius=UI_RADIUS, fg_color=COLORS["danger_fg"], hover_color=COLORS["danger_hover"], command=_delete).pack(side="right", padx=(0, UI_PAD_LG), pady=UI_PAD)
+            ctk.CTkButton(row, text="Edit", width=60, height=28, font=ctk.CTkFont(family=UI_FONT_FAMILY), corner_radius=UI_RADIUS, fg_color=COLORS["secondary_fg"], hover_color=COLORS["secondary_hover"], command=_edit).pack(side="right", padx=4, pady=UI_PAD)
+            ctk.CTkButton(row, text="Delete", width=60, height=28, font=ctk.CTkFont(family=UI_FONT_FAMILY), corner_radius=UI_RADIUS, fg_color=COLORS["danger_fg"], hover_color=COLORS["danger_hover"], command=_delete).pack(side="right", padx=(0, UI_PAD_LG), pady=UI_PAD)
 
     def add_new_prompt():
         _open_edit_prompt_dialog(root, None, refresh_prompts_list, UI_PAD, UI_RADIUS, UI_FONT_FAMILY, F, COLORS)
 
-    ctk.CTkButton(prompts_header, text="Add prompt", font=ctk.CTkFont(family=UI_FONT_FAMILY, size=F.small), corner_radius=UI_RADIUS, fg_color=COLORS["primary_fg"], hover_color=COLORS["primary_hover"], command=add_new_prompt).pack(side="right")
+    ctk.CTkButton(prompts_header, text="Add prompt", font=ctk.CTkFont(family=UI_FONT_FAMILY, size=F.small), corner_radius=UI_RADIUS, fg_color=COLORS["primary_fg"], hover_color=COLORS["primary_hover"], command=add_new_prompt, width=92).pack(side="right")
     refresh_prompts_list()
 
     # Settings tab
@@ -959,8 +959,8 @@ def main():
             app.openai_key_status_label.configure(text="No key saved yet. Get an API key from platform.openai.com and paste it above.")
         else:
             messagebox.showerror("Clear failed", "Could not remove the API key file.", parent=root)
-    ctk.CTkButton(api_key_row, text="Save key", font=ctk.CTkFont(family=UI_FONT_FAMILY, size=F.small), width=100, height=32, corner_radius=UI_RADIUS, fg_color=COLORS["primary_fg"], hover_color=COLORS["primary_hover"], command=_save_openai_key).pack(side="left")
-    ctk.CTkButton(api_key_row, text="Clear key", font=ctk.CTkFont(family=UI_FONT_FAMILY, size=F.small), width=100, height=32, corner_radius=UI_RADIUS, fg_color=COLORS["secondary_fg"], hover_color=COLORS["secondary_hover"], command=_clear_openai_key).pack(side="left", padx=(UI_PAD, 0))
+    ctk.CTkButton(api_key_row, text="Save key", font=ctk.CTkFont(family=UI_FONT_FAMILY, size=F.small), width=84, height=32, corner_radius=UI_RADIUS, fg_color=COLORS["primary_fg"], hover_color=COLORS["primary_hover"], command=_save_openai_key).pack(side="left")
+    ctk.CTkButton(api_key_row, text="Clear key", font=ctk.CTkFont(family=UI_FONT_FAMILY, size=F.small), width=84, height=32, corner_radius=UI_RADIUS, fg_color=COLORS["secondary_fg"], hover_color=COLORS["secondary_hover"], command=_clear_openai_key).pack(side="left", padx=(UI_PAD, 0))
     status_text = "A key is already saved. Enter a new key and click Save key to replace it." if get_openai_api_key() else "No key saved yet. Get an API key from platform.openai.com and paste it above."
     app.openai_key_status_label = ctk.CTkLabel(settings_card, text=status_text, font=ctk.CTkFont(family=UI_FONT_FAMILY, size=F.tiny), text_color="gray", wraplength=520, anchor="w")
     app.openai_key_status_label.pack(anchor="w", pady=(0, UI_PAD_LG))
