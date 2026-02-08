@@ -846,7 +846,6 @@ def main():
         try:
             with open(path, "w", encoding="utf-8") as f:
                 f.write(content)
-            messagebox.showinfo("Exported", f"Saved to {path}", parent=root)
         except Exception as e:
             messagebox.showerror("Export failed", str(e), parent=root)
 
