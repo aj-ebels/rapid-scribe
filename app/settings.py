@@ -43,6 +43,7 @@ def load_settings(default_model=None):
         "loopback_device_index": None,
         "transcription_model": model,
         "chunk_duration_sec": 5.0,
+        "auto_generate_export_name": True,
     }
     if not SETTINGS_FILE.exists():
         return out
@@ -56,6 +57,8 @@ def load_settings(default_model=None):
             out["transcription_model"] = data.get("transcription_model", model) or model
             if "chunk_duration_sec" in data and isinstance(data["chunk_duration_sec"], (int, float)):
                 out["chunk_duration_sec"] = max(3.0, min(30.0, float(data["chunk_duration_sec"])))
+            if "auto_generate_export_name" in data:
+                out["auto_generate_export_name"] = bool(data["auto_generate_export_name"])
     except Exception:
         pass
     return out

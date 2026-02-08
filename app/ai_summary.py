@@ -56,3 +56,37 @@ def generate_ai_summary(api_key, prompt_template, transcript, manual_notes=""):
         return True, (content or "").strip()
     except Exception as e:
         return False, str(e)
+
+
+def generate_export_name(api_key, summary_excerpt):
+    """
+    Call OpenAI API to generate a very concise export file name from a summary excerpt.
+    summary_excerpt: typically the first 250 characters of the summary.
+    Returns (success, name_or_error). On success, name is a short string like "ABC Industries call".
+    Does not use the same rate limit as generate_ai_summary so it can be called immediately after.
+    """
+    excerpt = (summary_excerpt or "").strip()
+    if not excerpt:
+        return False, "Summary excerpt is empty."
+
+    prompt = (
+        "Generate a very concise export file name for this meeting summary, "
+        "suitable for a filename (no extension). Examples: \"ABC Industries call\", \"post-conference meeting\". "
+        "Reply with only the suggested name, nothing else.\n\nSummary excerpt:\n" + excerpt[:250]
+    )
+    try:
+        from openai import OpenAI
+    except ImportError:
+        return False, "The 'openai' package is not installed. Run: pip install openai"
+    try:
+        client = OpenAI(api_key=api_key)
+        response = client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[{"role": "user", "content": prompt}],
+        )
+        content = (response.choices[0].message.content or "").strip()
+        if not content:
+            return False, "No name returned."
+        return True, content
+    except Exception as e:
+        return False, str(e)

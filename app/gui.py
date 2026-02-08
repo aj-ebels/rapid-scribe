@@ -38,7 +38,7 @@ from .capture import (
     MIXER_GAIN_MEETING,
     SAMPLE_RATE,
 )
-from .ai_summary import generate_ai_summary
+from .ai_summary import generate_ai_summary, generate_export_name
 from .api_key_storage import get_openai_api_key, set_openai_api_key, clear_openai_api_key
 from .diagnostic import write as diag
 
@@ -649,19 +649,32 @@ def main():
         app.summary_generate_btn.configure(state="disabled")
         app.summary_status_var.set("Generating…")
         result_holder = []
+        want_auto_name = (
+            not (app.export_name_var.get() or "").strip()
+            and app.auto_generate_export_name_var.get()
+        )
         def worker():
             ok, out = generate_ai_summary(api_key, prompt_obj["prompt"], transcript, manual_notes=manual_notes)
-            result_holder.append((ok, out))
+            generated_name = None
+            if ok and want_auto_name and (out or "").strip():
+                name_ok, name_result = generate_export_name(api_key, (out or "")[:250])
+                if name_ok and name_result:
+                    generated_name = name_result
+            result_holder.append((ok, out, generated_name))
         def check_done():
             if not result_holder:
                 root.after(200, check_done)
                 return
-            ok, out = result_holder[0]
+            ok, out, generated_name = result_holder[0]
             app.summary_generate_btn.configure(state="normal")
             app.summary_status_var.set("")
             if ok:
                 app.summary_text.delete("1.0", "end")
                 app.summary_text.insert("1.0", out)
+                if generated_name:
+                    safe = "".join(c if c.isalnum() or c in "._- " else "-" for c in generated_name)
+                    safe = safe.replace(" ", "-").strip("-") or generated_name
+                    app.export_name_var.set(safe)
             else:
                 messagebox.showerror("AI Summary failed", out, parent=root)
         threading.Thread(target=worker, daemon=True).start()
@@ -710,12 +723,21 @@ def main():
 
     export_row = ctk.CTkFrame(tab_transcript, fg_color="transparent")
     export_row.pack(fill="x", pady=(UI_PAD, UI_PAD_LG), padx=UI_PAD_LG)
-    ctk.CTkLabel(export_row, text="Export:", font=ctk.CTkFont(family=UI_FONT_FAMILY, size=F.small)).pack(side="left", padx=(UI_PAD, 4), pady=4)
+    ctk.CTkLabel(export_row, text="Export file name:", font=ctk.CTkFont(family=UI_FONT_FAMILY, size=F.small)).pack(side="left", padx=(UI_PAD, 4), pady=4)
     app.export_name_var = ctk.StringVar(value="")
-    app.export_name_entry = ctk.CTkEntry(export_row, textvariable=app.export_name_var, width=160, height=28, placeholder_text="e.g. meeting-notes", font=ctk.CTkFont(family=UI_FONT_FAMILY, size=F.small))
+    app.export_name_entry = ctk.CTkEntry(export_row, textvariable=app.export_name_var, width=280, height=28, placeholder_text="e.g. meeting-notes", font=ctk.CTkFont(family=UI_FONT_FAMILY, size=F.small))
     app.export_name_entry.pack(side="left", padx=4, pady=4)
     app.export_prepend_date_var = ctk.BooleanVar(value=True)
     ctk.CTkCheckBox(export_row, text="Prepend today's date", variable=app.export_prepend_date_var, font=ctk.CTkFont(family=UI_FONT_FAMILY, size=F.small)).pack(side="left", padx=8, pady=4)
+    app.auto_generate_export_name_var = ctk.BooleanVar(value=app.settings.get("auto_generate_export_name", True))
+    def _on_auto_generate_name_changed():
+        app.settings["auto_generate_export_name"] = app.auto_generate_export_name_var.get()
+        save_settings(app.settings)
+    app.auto_generate_export_name_cb = ctk.CTkCheckBox(
+        export_row, text="Also auto-generate file name", variable=app.auto_generate_export_name_var,
+        font=ctk.CTkFont(family=UI_FONT_FAMILY, size=F.small), command=_on_auto_generate_name_changed
+    )
+    app.auto_generate_export_name_cb.pack(side="left", padx=8, pady=4)
     ctk.CTkButton(export_row, text="Export", font=ctk.CTkFont(family=UI_FONT_FAMILY, size=F.small), width=80, height=28, corner_radius=UI_RADIUS, fg_color=COLORS["secondary_fg"], hover_color=COLORS["secondary_hover"], command=_export_markdown).pack(side="left", padx=(0, 0), pady=4)
 
     # AI Prompts tab
