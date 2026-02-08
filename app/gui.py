@@ -160,7 +160,7 @@ def update_model_status(app):
         if not installed:
             app.status_var.set("Install the transcription model first (Model tab → Download & install)")
         elif not loaded:
-            app.status_var.set("Loading model…")
+            app.status_var.set("Loading transcription model…")
         else:
             app.status_var.set("Ready to record & transcribe")
     if getattr(app, "start_btn", None) is not None:
@@ -604,7 +604,7 @@ def main():
     header = ctk.CTkFrame(main_content, fg_color=COLORS["header"], corner_radius=UI_RADIUS, height=_header_height)
     header.pack(fill="x", pady=(0, UI_PAD))
     header.pack_propagate(False)
-    app.status_var = ctk.StringVar(value="Loading model…")
+    app.status_var = ctk.StringVar(value="Loading transcription model…")
     ctk.CTkLabel(header, textvariable=app.status_var, font=ctk.CTkFont(family=UI_FONT_FAMILY, size=F.header, weight="bold")).pack(side="left", padx=UI_PAD_LG, pady=UI_PAD)
     app.model_status_var = ctk.StringVar(value="")
     # Live input volume indicator (small bar, right of status)
