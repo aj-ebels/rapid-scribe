@@ -738,7 +738,8 @@ def main():
     summary_options_row.grid(row=1, column=2, sticky="ew", padx=(UI_PAD, UI_PAD_LG), pady=(0, PAD_BELOW_AUTO_CHECKBOX))
     ctk.CTkCheckBox(
         summary_options_row, text="Auto-generate summary when recording stops", variable=app.auto_generate_summary_when_stopping_var,
-        font=ctk.CTkFont(family=UI_FONT_FAMILY, size=F.small), command=_on_auto_summary_when_stopping_changed
+        font=ctk.CTkFont(family=UI_FONT_FAMILY, size=F.small), command=_on_auto_summary_when_stopping_changed,
+        border_width=1, corner_radius=3, checkbox_width=18, checkbox_height=18
     ).pack(side="left", padx=0, pady=0)
 
     def _refresh_summary_prompt_menu():
@@ -864,7 +865,8 @@ def main():
         save_settings(app.settings)
     ctk.CTkCheckBox(
         export_row, text="Prepend today's date", variable=app.export_prepend_date_var,
-        font=ctk.CTkFont(family=UI_FONT_FAMILY, size=F.small), command=_on_prepend_date_changed
+        font=ctk.CTkFont(family=UI_FONT_FAMILY, size=F.small), command=_on_prepend_date_changed,
+        border_width=1, corner_radius=3, checkbox_width=18, checkbox_height=18
     ).pack(side="left", padx=8, pady=4)
     app.auto_generate_export_name_var = ctk.BooleanVar(value=app.settings.get("auto_generate_export_name", True))
     def _on_auto_generate_name_changed():
@@ -872,7 +874,8 @@ def main():
         save_settings(app.settings)
     app.auto_generate_export_name_cb = ctk.CTkCheckBox(
         export_row, text="Also AI-generate file name if blank", variable=app.auto_generate_export_name_var,
-        font=ctk.CTkFont(family=UI_FONT_FAMILY, size=F.small), command=_on_auto_generate_name_changed
+        font=ctk.CTkFont(family=UI_FONT_FAMILY, size=F.small), command=_on_auto_generate_name_changed,
+        border_width=1, corner_radius=3, checkbox_width=18, checkbox_height=18
     )
     app.auto_generate_export_name_cb.pack(side="left", padx=8, pady=4)
     ctk.CTkButton(export_row, text="Export", font=ctk.CTkFont(family=UI_FONT_FAMILY, size=F.small), width=80, height=28, corner_radius=UI_RADIUS, fg_color=COLORS["secondary_fg"], hover_color=COLORS["secondary_hover"], command=_export_markdown).pack(side="left", padx=(0, 0), pady=4)
