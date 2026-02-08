@@ -69,7 +69,7 @@ def poll_text_queue(app):
             pass
         if getattr(app, "volume_bar", None) is not None:
             try:
-                # Map RMS to 0..1 (speech roughly 0.005–0.3)
+                # Map RMS to 0..1 (speech roughly 0.004–0.3)
                 p = min(1.0, max(0.0, level / 0.3))
                 app.volume_bar.set(p)
             except Exception:

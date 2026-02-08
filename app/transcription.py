@@ -156,7 +156,7 @@ def uninstall_transcription_model(repo_id, revision_hashes):
 
 
 # Chunks with RMS below this are not transcribed (reduces ASR hallucination on near-silence).
-MIN_RMS_TRANSCRIBE = 0.005
+MIN_RMS_TRANSCRIBE = 0.004
 
 
 def transcription_worker(chunk_queue, text_queue, stop_event, model_id=None):

@@ -25,7 +25,7 @@ CAPTURE_SAMPLE_RATE_MEETING = 48000
 FRAMES_PER_READ_MEETING = 4096
 MIXER_GAIN_MEETING = 0.7
 CHUNK_PATH = Path(tempfile.gettempdir()) / "meetings_chunk.wav"
-SILENCE_RMS_THRESHOLD = 0.005
+SILENCE_RMS_THRESHOLD = 0.004
 
 
 def _is_silent(chunk: np.ndarray) -> bool:
