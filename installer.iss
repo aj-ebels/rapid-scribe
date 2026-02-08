@@ -11,7 +11,7 @@
 AppId={{B8E92A1C-5D4F-4E2A-9C3B-1D7E8F0A2B3C}
 AppName={#AppName}
 AppVersion=1.0
-AppPublisher=Blue Bridge
+AppPublisher=Blue Bridge Solutions
 DefaultDirName={autopf}\Blue Bridge Meeting Companion
 DefaultGroupName=Blue Bridge Meeting Companion
 OutputDir=installer_output
