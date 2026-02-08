@@ -17,7 +17,7 @@ except ImportError:
 
 from .settings import load_settings, save_settings, AUDIO_MODE_DEFAULT, AUDIO_MODE_LOOPBACK, AUDIO_MODE_MEETING
 from .devices import list_audio_devices, list_loopback_devices, get_default_monitor_device, get_effective_audio_device
-from .prompts import load_prompts, add_prompt, update_prompt, delete_prompt, get_prompt_by_id, TRANSCRIPT_PLACEHOLDER
+from .prompts import load_prompts, add_prompt, update_prompt, delete_prompt, get_prompt_by_id, TRANSCRIPT_PLACEHOLDER, MANUAL_NOTES_PLACEHOLDER
 from .transcription import (
     STANDARD_TRANSCRIPTION_MODEL,
     get_transcription_model,
@@ -265,7 +265,7 @@ def _open_edit_prompt_dialog(parent, prompt_id, on_saved, ui_pad, ui_radius, fon
     name_entry.pack(anchor="w", padx=ui_pad, pady=(0, ui_pad))
     name_entry.insert(0, name_var.get())
 
-    ctk.CTkLabel(win, text=f"Prompt (use {TRANSCRIPT_PLACEHOLDER} where the transcript should go)", font=ctk.CTkFont(family=font_family, size=font_sizes.small)).pack(anchor="w", padx=ui_pad, pady=(ui_pad, 2))
+    ctk.CTkLabel(win, text=f"Prompt: use {TRANSCRIPT_PLACEHOLDER} for the transcript, {MANUAL_NOTES_PLACEHOLDER} for manual notes from the Transcript tab.", font=ctk.CTkFont(family=font_family, size=font_sizes.small)).pack(anchor="w", padx=ui_pad, pady=(ui_pad, 2))
     prompt_text = ctk.CTkTextbox(win, width=500, height=180, font=ctk.CTkFont(family=font_family, size=font_sizes.small))
     prompt_text.pack(anchor="w", padx=ui_pad, pady=(0, ui_pad))
     if prompt:
@@ -280,8 +280,8 @@ def _open_edit_prompt_dialog(parent, prompt_id, on_saved, ui_pad, ui_radius, fon
         if not text:
             messagebox.showwarning("Missing prompt", "Please enter the prompt text.", parent=win)
             return
-        if TRANSCRIPT_PLACEHOLDER not in text:
-            if not messagebox.askyesno("No placeholder", f"Prompt does not contain '{TRANSCRIPT_PLACEHOLDER}'. Add it so the transcript is inserted?", parent=win):
+        if TRANSCRIPT_PLACEHOLDER not in text and MANUAL_NOTES_PLACEHOLDER not in text:
+            if not messagebox.askyesno("No placeholder", f"Prompt does not contain '{TRANSCRIPT_PLACEHOLDER}' or '{MANUAL_NOTES_PLACEHOLDER}'. Add at least one so content is inserted?", parent=win):
                 return
         if is_new:
             add_prompt(name, text)
@@ -568,11 +568,23 @@ def main():
 
     refresh_models_tab()
 
-    # Transcript tab
+    # Transcript tab — three equal-width columns: Manual Notes | Transcript | AI Summary
     card = ctk.CTkFrame(tab_transcript, fg_color="transparent")
     card.pack(fill="both", expand=True)
+
+    # Manual Notes (left, 1/3)
+    notes_panel = ctk.CTkFrame(card, fg_color="transparent")
+    notes_panel.pack(side="left", fill="both", expand=True, padx=(UI_PAD_LG, UI_PAD))
+    notes_header = ctk.CTkFrame(notes_panel, fg_color="transparent")
+    notes_header.pack(fill="x", pady=(0, 4))
+    ctk.CTkLabel(notes_header, text="Manual Notes", font=ctk.CTkFont(family=UI_FONT_FAMILY, size=F.header, weight="bold")).pack(side="left")
+    ctk.CTkLabel(notes_panel, text=f"Use {MANUAL_NOTES_PLACEHOLDER} in AI Prompts to include these notes in the summary.", font=ctk.CTkFont(family=UI_FONT_FAMILY, size=F.tiny), text_color="gray", wraplength=280, anchor="w").pack(anchor="w", pady=(0, 4))
+    app.manual_notes = ctk.CTkTextbox(notes_panel, wrap="word", font=ctk.CTkFont(family=MONO_FONT_FAMILY, size=F.body), corner_radius=8, border_width=0, fg_color=COLORS["textbox_bg"], border_spacing=UI_PAD)
+    app.manual_notes.pack(fill="both", expand=True, pady=(0, UI_PAD))
+
+    # Transcript (middle, 1/3)
     transcript_panel = ctk.CTkFrame(card, fg_color="transparent")
-    transcript_panel.pack(side="left", fill="both", expand=True, padx=(UI_PAD_LG, UI_PAD))
+    transcript_panel.pack(side="left", fill="both", expand=True, padx=(UI_PAD, UI_PAD))
     card_header = ctk.CTkFrame(transcript_panel, fg_color="transparent")
     card_header.pack(fill="x", pady=(0, 4))
     ctk.CTkLabel(card_header, text="Transcript", font=ctk.CTkFont(family=UI_FONT_FAMILY, size=F.header, weight="bold")).pack(side="left")
@@ -589,6 +601,7 @@ def main():
     app.log = ctk.CTkTextbox(transcript_panel, wrap="word", font=ctk.CTkFont(family=MONO_FONT_FAMILY, size=F.body), corner_radius=8, border_width=0, fg_color=COLORS["textbox_bg"], border_spacing=UI_PAD)
     app.log.pack(fill="both", expand=True, pady=(0, UI_PAD))
 
+    # AI Summary (right, 1/3)
     summary_panel = ctk.CTkFrame(card, fg_color="transparent")
     summary_panel.pack(side="left", fill="both", expand=True, padx=(UI_PAD, UI_PAD_LG))
     summary_header = ctk.CTkFrame(summary_panel, fg_color="transparent")
@@ -632,11 +645,12 @@ def main():
         if not transcript:
             messagebox.showwarning("Empty transcript", "Transcript is empty. Record or paste some text first.", parent=root)
             return
+        manual_notes = app.manual_notes.get("1.0", "end").strip()
         app.summary_generate_btn.configure(state="disabled")
         app.summary_status_var.set("Generating…")
         result_holder = []
         def worker():
-            ok, out = generate_ai_summary(api_key, prompt_obj["prompt"], transcript)
+            ok, out = generate_ai_summary(api_key, prompt_obj["prompt"], transcript, manual_notes=manual_notes)
             result_holder.append((ok, out))
         def check_done():
             if not result_holder:
@@ -659,8 +673,9 @@ def main():
     def _export_markdown():
         summary = app.summary_text.get("1.0", "end").strip()
         transcript = app.log.get("1.0", "end").strip()
-        if not summary and not transcript:
-            messagebox.showwarning("Nothing to export", "Add an AI summary and/or transcript first.", parent=root)
+        manual_notes = app.manual_notes.get("1.0", "end").strip()
+        if not summary and not transcript and not manual_notes:
+            messagebox.showwarning("Nothing to export", "Add an AI summary, transcript, and/or manual notes first.", parent=root)
             return
         name_part = (app.export_name_var.get() or "").strip()
         if name_part:
@@ -678,6 +693,8 @@ def main():
         parts = []
         if summary:
             parts.append("## Summary\n\n" + summary)
+        if manual_notes:
+            parts.append("## Manual Notes\n\n" + manual_notes)
         if transcript:
             parts.append("## Transcript\n\n" + transcript)
         content = "\n\n---\n\n".join(parts) + "\n"
@@ -704,7 +721,7 @@ def main():
     # AI Prompts tab
     prompts_header = ctk.CTkFrame(tab_prompts, fg_color="transparent")
     prompts_header.pack(fill="x", padx=UI_PAD_LG, pady=(UI_PAD, 4))
-    ctk.CTkLabel(prompts_header, text=f"Custom prompt templates for AI Summary. Use {TRANSCRIPT_PLACEHOLDER} where the transcript should be inserted.", font=ctk.CTkFont(family=UI_FONT_FAMILY, size=F.small), text_color="gray", wraplength=1000, anchor="w").pack(anchor="w", side="left", fill="x", expand=True, padx=(0, UI_PAD))
+    ctk.CTkLabel(prompts_header, text=f"Custom prompt templates for AI Summary. Use {TRANSCRIPT_PLACEHOLDER} for the transcript and {MANUAL_NOTES_PLACEHOLDER} for manual notes from the Transcript tab.", font=ctk.CTkFont(family=UI_FONT_FAMILY, size=F.small), text_color="gray", wraplength=1000, anchor="w").pack(anchor="w", side="left", fill="x", expand=True, padx=(0, UI_PAD))
     prompts_scroll = ctk.CTkScrollableFrame(tab_prompts, fg_color="transparent")
     prompts_scroll.pack(fill="both", expand=True, padx=UI_PAD_LG, pady=UI_PAD)
 

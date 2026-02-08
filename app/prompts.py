@@ -12,6 +12,7 @@ from pathlib import Path
 # Project root (parent of app/) for prompts.json in dev
 _BASE = Path(__file__).resolve().parent.parent
 TRANSCRIPT_PLACEHOLDER = "{{transcript}}"
+MANUAL_NOTES_PLACEHOLDER = "{{manual_notes}}"
 
 
 def _get_app_data_dir():

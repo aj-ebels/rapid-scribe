@@ -5,17 +5,18 @@ Rate limited to 1 call/5 seconds and 5 calls/minute.
 import threading
 import time
 
-from .prompts import TRANSCRIPT_PLACEHOLDER
+from .prompts import TRANSCRIPT_PLACEHOLDER, MANUAL_NOTES_PLACEHOLDER
 
 _recent_calls = []
 _rate_limit_lock = threading.Lock()
 
 
-def generate_ai_summary(api_key, prompt_template, transcript):
+def generate_ai_summary(api_key, prompt_template, transcript, manual_notes=""):
     """
     Call OpenAI API to generate summary.
     Returns (success, result_text_or_error).
     Rate limited to 1 call/5 seconds, 5 calls/minute.
+    Replaces {{transcript}} and {{manual_notes}} in the prompt template.
     """
     if not (prompt_template or "").strip():
         return False, "Prompt template is empty."
@@ -34,6 +35,7 @@ def generate_ai_summary(api_key, prompt_template, transcript):
         _recent_calls.append(now)
 
     text = prompt_template.replace(TRANSCRIPT_PLACEHOLDER, transcript)
+    text = text.replace(MANUAL_NOTES_PLACEHOLDER, manual_notes or "")
     try:
         from openai import OpenAI
     except ImportError:
