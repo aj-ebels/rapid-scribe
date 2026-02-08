@@ -158,7 +158,7 @@ def update_model_status(app):
                 app.model_status_label.configure(text_color="gray")
     if getattr(app, "status_var", None) is not None:
         if not installed:
-            app.status_var.set("Install a transcription model first (Model tab → Download & install)")
+            app.status_var.set("Install the transcription model first (Model tab → Download & install)")
         elif not loaded:
             app.status_var.set("Loading model…")
         else:
@@ -644,66 +644,34 @@ def main():
     install_card = ctk.CTkFrame(models_card, fg_color=COLORS["card"], corner_radius=UI_RADIUS, border_width=1)
     install_card.pack(fill="x", padx=UI_PAD_LG, pady=(UI_PAD, UI_PAD_LG))
     ctk.CTkLabel(install_card, text="Install the transcription model (required before first recording)", font=ctk.CTkFont(family=UI_FONT_FAMILY, size=F.header, weight="bold")).pack(anchor="w", padx=UI_PAD_LG, pady=(UI_PAD, 4))
-    ctk.CTkLabel(install_card, text="Recording and live transcription require a speech-to-text model. Download the model below once; after that you can start recording. Size: about 250 MB.", font=ctk.CTkFont(family=UI_FONT_FAMILY, size=F.small), text_color="gray", wraplength=600, anchor="w").pack(anchor="w", padx=UI_PAD_LG, pady=(0, 4))
+    ctk.CTkLabel(install_card, text="Recording and live transcription require a speech-to-text model. Download the model below once; after that you can start recording. Size: ~650 MB. Est. download time: 5-20 seconds.", font=ctk.CTkFont(family=UI_FONT_FAMILY, size=F.small), text_color="gray", wraplength=1000, anchor="w").pack(anchor="w", padx=UI_PAD_LG, pady=(0, 4))
     ctk.CTkLabel(install_card, text=f"Model: {STANDARD_TRANSCRIPTION_MODEL}", font=ctk.CTkFont(family=UI_FONT_FAMILY, size=F.tiny), text_color="gray", wraplength=600, anchor="w").pack(anchor="w", padx=UI_PAD_LG, pady=(0, UI_PAD))
     install_row = ctk.CTkFrame(install_card, fg_color="transparent")
     install_row.pack(fill="x", padx=UI_PAD_LG, pady=(0, UI_PAD))
-    app.install_model_status_var = ctk.StringVar(value="")
-    ctk.CTkLabel(install_row, textvariable=app.install_model_status_var, font=ctk.CTkFont(family=UI_FONT_FAMILY, size=F.small), text_color="gray").pack(side="left", padx=(0, UI_PAD))
-    app.install_model_progress = ctk.CTkProgressBar(install_row, width=200, height=12, corner_radius=6, progress_color=COLORS["primary_fg"])
-    app.install_model_progress.pack(side="left", padx=(0, UI_PAD))
-    app.install_model_progress.set(0)
-    app.install_model_progress.pack_forget()
     def _do_install_standard_model():
-        app.install_model_status_var.set("Downloading… (this may take a few minutes)")
         app.install_model_btn.configure(state="disabled")
-        app.install_model_progress.pack(side="left", padx=(0, UI_PAD))
-        app.install_model_progress.set(0)
         if getattr(app, "model_status_var", None) is not None:
             app.model_status_var.set("Transcription model: Downloading… (one-time setup)")
         if getattr(app, "model_status_label", None) is not None:
             app.model_status_label.configure(text_color="gray")
         result_holder = []
-        progress_queue = queue.Queue()
 
         def worker():
-            ok, err = download_transcription_model(STANDARD_TRANSCRIPTION_MODEL, progress_queue=progress_queue)
+            ok, err = download_transcription_model(STANDARD_TRANSCRIPTION_MODEL)
             result_holder.append((ok, err))
 
-        def _format_mb(n):
-            return f"{n / (1024 * 1024):.1f} MB"
-
         def check_done():
-            # Drain progress updates
-            try:
-                while True:
-                    current, total = progress_queue.get_nowait()
-                    if total and total > 0:
-                        p = min(1.0, current / total)
-                        app.install_model_progress.set(p)
-                        app.install_model_status_var.set(f"Downloading… {_format_mb(current)} / {_format_mb(total)}")
-                    else:
-                        # Total not yet known; show bytes so far
-                        if current > 0:
-                            app.install_model_progress.set(0.0)  # indeterminate look
-                            app.install_model_status_var.set(f"Downloading… {_format_mb(current)}…")
-            except queue.Empty:
-                pass
             if not result_holder:
                 app.root.after(200, check_done)
                 return
             ok, err = result_holder[0]
-            app.install_model_progress.set(1.0)
-            app.root.after(100, lambda: app.install_model_progress.pack_forget())
             app.install_model_btn.configure(state="normal")
             if ok:
-                app.install_model_status_var.set("Ready. You can start recording.")
                 app.settings["transcription_model"] = STANDARD_TRANSCRIPTION_MODEL
                 save_settings(app.settings)
                 refresh_models_tab()
                 update_model_status(app)
             else:
-                app.install_model_status_var.set("")
                 messagebox.showerror("Install failed", err or "Download failed.", parent=app.root)
         threading.Thread(target=worker, daemon=True).start()
         app.root.after(200, check_done)
@@ -754,11 +722,6 @@ def main():
             installed_card.pack_forget()
             install_card.pack(fill="x", padx=UI_PAD_LG, pady=(UI_PAD, UI_PAD_LG))
             app.install_model_btn.configure(state="normal")
-            if getattr(app, "install_model_status_var", None) is not None and not (app.install_model_status_var.get() or "").startswith("Downloading") and not (app.install_model_status_var.get() or "").startswith("Ready"):
-                app.install_model_status_var.set("")
-        if err and not standard_installed:
-            if getattr(app, "install_model_status_var", None) is not None:
-                app.install_model_status_var.set(f"Warning: {err[:80]}…" if len(err) > 80 else err)
         update_model_status(app)
 
     def _startup_check_done(models_err):

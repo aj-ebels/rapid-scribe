@@ -95,48 +95,11 @@ def _safe_stdout_stderr():
         sys.stderr = saved_stderr
 
 
-def download_transcription_model(model_id, progress_queue=None):
+def download_transcription_model(model_id):
     """
     Download (and briefly load) a transcription model from Hugging Face so it is cached for use.
     Does not keep the model in memory. Returns (success: bool, error_message: str | None).
-    If progress_queue is provided, uses snapshot_download with a progress-reporting tqdm and
-    puts (current_bytes, total_bytes) tuples on the queue (total may be 0 until known).
     """
-    if progress_queue is not None:
-        try:
-            with _safe_stdout_stderr():
-                from tqdm.auto import tqdm as base_tqdm
-
-                def make_progress_tqdm_class(q):
-                    """Return a tqdm subclass that pushes (current_bytes, total_bytes) to q. Hub expects a class, not a function."""
-
-                    class ProgressTqdm(base_tqdm):
-                        def __init__(self, *args, **kwargs):
-                            kwargs.pop("name", None)  # hub-specific; standard tqdm doesn't accept it
-                            self._progress_queue = q
-                            super().__init__(*args, **kwargs)
-
-                        def update(self, n=1):
-                            super().update(n)
-                            if self._progress_queue is not None:
-                                try:
-                                    self._progress_queue.put((self.n, self.total), block=False)
-                                except Exception:
-                                    pass
-
-                    return ProgressTqdm
-
-                from huggingface_hub import snapshot_download
-
-                download_kwargs = {"repo_id": model_id, "tqdm_class": make_progress_tqdm_class(progress_queue)}
-                if model_id in INT8_ONLY_REPOS:
-                    download_kwargs["allow_patterns"] = INT8_ONLY_ALLOW_PATTERNS
-                snapshot_download(**download_kwargs)
-            clear_transcription_model_cache()
-            return True, None
-        except Exception as e:
-            return False, str(e)
-
     try:
         with _safe_stdout_stderr():
             import onnx_asr
