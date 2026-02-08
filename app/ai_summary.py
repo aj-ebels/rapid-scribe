@@ -2,10 +2,13 @@
 AI summary: OpenAI API call with prompt template and transcript.
 Rate limited to 1 call/5 seconds and 5 calls/minute.
 """
+import re
 import threading
 import time
 
-from .prompts import TRANSCRIPT_PLACEHOLDER, MANUAL_NOTES_PLACEHOLDER
+# Regex patterns to replace {{transcript}} and {{manual_notes}} (optional spaces inside braces)
+_PLACEHOLDER_TRANSCRIPT = re.compile(r"\{\{\s*transcript\s*\}\}")
+_PLACEHOLDER_MANUAL_NOTES = re.compile(r"\{\{\s*manual_notes\s*\}\}")
 
 _recent_calls = []
 _rate_limit_lock = threading.Lock()
@@ -34,8 +37,10 @@ def generate_ai_summary(api_key, prompt_template, transcript, manual_notes=""):
             return False, f"Rate limit: please wait {max(5, int(wait_s))} second(s) between calls."
         _recent_calls.append(now)
 
-    text = prompt_template.replace(TRANSCRIPT_PLACEHOLDER, transcript)
-    text = text.replace(MANUAL_NOTES_PLACEHOLDER, manual_notes or "")
+    # Replace {{transcript}} and {{manual_notes}} (regex allows optional spaces inside braces)
+    # Use repl=lambda to avoid interpreting transcript/notes as regex backreferences
+    text = _PLACEHOLDER_TRANSCRIPT.sub(lambda m: transcript, prompt_template)
+    text = _PLACEHOLDER_MANUAL_NOTES.sub(lambda m: manual_notes or "", text)
     try:
         from openai import OpenAI
     except ImportError:
