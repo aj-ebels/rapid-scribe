@@ -112,7 +112,7 @@ def update_model_status(app):
         elif not loaded:
             app.status_var.set("Loading model…")
         else:
-            app.status_var.set("Ready — click Start to begin")
+            app.status_var.set("Ready to record")
     if getattr(app, "start_btn", None) is not None:
         app.start_btn.configure(state="normal" if ready else "disabled")
 
@@ -422,7 +422,7 @@ def main():
     header = ctk.CTkFrame(main_content, fg_color=COLORS["header"], corner_radius=UI_RADIUS, height=_header_height)
     header.pack(fill="x", pady=(0, UI_PAD))
     header.pack_propagate(False)
-    app.status_var = ctk.StringVar(value="Ready — click Start to begin")
+    app.status_var = ctk.StringVar(value="Ready to record")
     ctk.CTkLabel(header, textvariable=app.status_var, font=ctk.CTkFont(family=UI_FONT_FAMILY, size=F.header, weight="bold")).pack(side="left", padx=UI_PAD_LG, pady=UI_PAD)
     app.model_status_var = ctk.StringVar(value="")
     btn_frame = ctk.CTkFrame(header, fg_color="transparent")
@@ -574,10 +574,13 @@ def main():
     # Transcript tab — three equal-width columns: Manual Notes | Transcript | AI Summary
     card = ctk.CTkFrame(tab_transcript, fg_color="transparent")
     card.pack(fill="both", expand=True)
+    for col in (0, 1, 2):
+        card.grid_columnconfigure(col, weight=1, uniform="transcript_cols")
+    card.grid_rowconfigure(0, weight=1)
 
     # Manual Notes (left, 1/3)
     notes_panel = ctk.CTkFrame(card, fg_color="transparent")
-    notes_panel.pack(side="left", fill="both", expand=True, padx=(UI_PAD_LG, UI_PAD))
+    notes_panel.grid(row=0, column=0, sticky="nsew", padx=(UI_PAD_LG, UI_PAD))
     notes_header = ctk.CTkFrame(notes_panel, fg_color="transparent")
     notes_header.pack(fill="x", pady=(0, 4))
     ctk.CTkLabel(notes_header, text="Manual Notes", font=ctk.CTkFont(family=UI_FONT_FAMILY, size=F.header, weight="bold")).pack(side="left")
@@ -587,7 +590,7 @@ def main():
 
     # Transcript (middle, 1/3)
     transcript_panel = ctk.CTkFrame(card, fg_color="transparent")
-    transcript_panel.pack(side="left", fill="both", expand=True, padx=(UI_PAD, UI_PAD))
+    transcript_panel.grid(row=0, column=1, sticky="nsew", padx=UI_PAD)
     card_header = ctk.CTkFrame(transcript_panel, fg_color="transparent")
     card_header.pack(fill="x", pady=(0, 4))
     ctk.CTkLabel(card_header, text="Transcript", font=ctk.CTkFont(family=UI_FONT_FAMILY, size=F.header, weight="bold")).pack(side="left")
@@ -601,12 +604,13 @@ def main():
         app.log.delete("1.0", "end")
     ctk.CTkButton(card_header, text="Copy transcript", font=ctk.CTkFont(family=UI_FONT_FAMILY, size=F.small), width=140, height=36, corner_radius=UI_RADIUS, fg_color=COLORS["secondary_fg"], hover_color=COLORS["secondary_hover"], command=copy_transcript).pack(side="left", padx=(UI_PAD, 0), pady=4)
     ctk.CTkButton(card_header, text="Clear", font=ctk.CTkFont(family=UI_FONT_FAMILY, size=F.small), width=80, height=36, corner_radius=UI_RADIUS, fg_color=COLORS["secondary_fg"], hover_color=COLORS["secondary_hover"], command=clear_transcript).pack(side="right", padx=UI_PAD, pady=4)
+    ctk.CTkLabel(transcript_panel, text="Transcript will be included in the AI summary.", font=ctk.CTkFont(family=UI_FONT_FAMILY, size=F.tiny), text_color="gray", wraplength=400, anchor="w").pack(anchor="w", pady=(0, 4))
     app.log = ctk.CTkTextbox(transcript_panel, wrap="word", font=ctk.CTkFont(family=MONO_FONT_FAMILY, size=F.body), corner_radius=8, border_width=0, fg_color=COLORS["textbox_bg"], border_spacing=UI_PAD)
     app.log.pack(fill="both", expand=True, pady=(0, UI_PAD))
 
     # AI Summary (right, 1/3)
     summary_panel = ctk.CTkFrame(card, fg_color="transparent")
-    summary_panel.pack(side="left", fill="both", expand=True, padx=(UI_PAD, UI_PAD_LG))
+    summary_panel.grid(row=0, column=2, sticky="nsew", padx=(UI_PAD, UI_PAD_LG))
     summary_header = ctk.CTkFrame(summary_panel, fg_color="transparent")
     summary_header.pack(fill="x", pady=(0, 4))
     ctk.CTkLabel(summary_header, text="AI Summary", font=ctk.CTkFont(family=UI_FONT_FAMILY, size=F.header, weight="bold")).pack(side="left")
