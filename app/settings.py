@@ -43,6 +43,10 @@ def load_settings(default_model=None):
         "loopback_device_index": None,
         "transcription_model": model,
         "chunk_duration_sec": 5.0,
+        "use_silence_chunking": True,
+        "min_chunk_sec": 1.5,
+        "max_chunk_sec": 8.0,
+        "silence_duration_sec": 0.5,
         "auto_generate_export_name": True,
         "export_prepend_date": True,
         "auto_generate_summary_when_stopping": False,
@@ -59,6 +63,14 @@ def load_settings(default_model=None):
             out["transcription_model"] = data.get("transcription_model", model) or model
             if "chunk_duration_sec" in data and isinstance(data["chunk_duration_sec"], (int, float)):
                 out["chunk_duration_sec"] = max(3.0, min(30.0, float(data["chunk_duration_sec"])))
+            if "use_silence_chunking" in data:
+                out["use_silence_chunking"] = bool(data["use_silence_chunking"])
+            if "min_chunk_sec" in data and isinstance(data["min_chunk_sec"], (int, float)):
+                out["min_chunk_sec"] = max(0.5, min(10.0, float(data["min_chunk_sec"])))
+            if "max_chunk_sec" in data and isinstance(data["max_chunk_sec"], (int, float)):
+                out["max_chunk_sec"] = max(3.0, min(60.0, float(data["max_chunk_sec"])))
+            if "silence_duration_sec" in data and isinstance(data["silence_duration_sec"], (int, float)):
+                out["silence_duration_sec"] = max(0.2, min(2.0, float(data["silence_duration_sec"])))
             if "auto_generate_export_name" in data:
                 out["auto_generate_export_name"] = bool(data["auto_generate_export_name"])
             if "export_prepend_date" in data:

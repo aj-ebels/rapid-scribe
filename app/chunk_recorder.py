@@ -1,7 +1,11 @@
 """
-Sliding-window recorder: accumulates stereo audio (L=mic, R=loopback) into fixed-duration
-chunks, saves each as a mono WAV at ASR sample rate (16 kHz), then invokes callback with path.
-The remainder after each chunk is kept in the buffer so no audio is dropped at boundaries.
+Sliding-window recorder: accumulates stereo audio (L=mic, R=loopback) into chunks,
+saves each as a mono WAV at ASR sample rate (16 kHz), then invokes callback with path.
+
+Supports two chunking modes:
+- Fixed: emit every chunk_duration_sec seconds (sliding window; remainder kept).
+- Silence-based: emit when min chunk length is met and silence_duration_sec of
+  consecutive silence is seen, or when max chunk length is reached (no mid-chunk cuts).
 """
 
 import os
@@ -16,22 +20,37 @@ def _ensure_dir(path: str):
     os.makedirs(path, exist_ok=True)
 
 
+def _is_silent_block(stereo_frames: np.ndarray, threshold: float = 0.01) -> bool:
+    """True if the block has very low energy (mono RMS below threshold)."""
+    mono = np.mean(stereo_frames, axis=1).astype(np.float64)
+    rms = np.sqrt(np.mean(mono ** 2))
+    return rms < threshold
+
+
 class ChunkRecorder:
     """
-    Receives stereo blocks (L=mic, R=loopback), accumulates chunk_duration_sec seconds,
-    writes a mono WAV (mean of L+R) at asr_sample_rate, invokes on_chunk_ready(path).
+    Receives stereo blocks (L=mic, R=loopback). In fixed mode: accumulates
+    chunk_duration_sec seconds per chunk (sliding window). In silence mode: accumulates
+    until min_chunk_sec is met and silence_duration_sec of silence is seen, or
+    max_chunk_sec is reached. Writes mono WAV at asr_sample_rate and invokes
+    on_chunk_ready(path).
     """
 
     def __init__(
         self,
         sample_rate: int,
-        chunk_duration_sec: float,
+        chunk_duration_sec: float = 5.0,
         asr_sample_rate: int = 16000,
         temp_dir: str = None,
         on_chunk_ready=None,
+        *,
+        use_silence_chunking: bool = False,
+        min_chunk_sec: float = 1.5,
+        max_chunk_sec: float = 8.0,
+        silence_duration_sec: float = 0.5,
+        silence_rms_threshold: float = 0.01,
     ):
         self.sample_rate = sample_rate
-        self.chunk_frames = int(sample_rate * chunk_duration_sec)
         self.asr_sample_rate = asr_sample_rate
         self.temp_dir = temp_dir or os.path.join(os.environ.get("TEMP", os.path.expanduser("~")), "MeetingsChunks")
         self.on_chunk_ready = on_chunk_ready
@@ -40,22 +59,61 @@ class ChunkRecorder:
         self._lock = threading.Lock()
         _ensure_dir(self.temp_dir)
 
+        self._use_silence_chunking = use_silence_chunking
+        if use_silence_chunking:
+            self._min_chunk_frames = int(sample_rate * min_chunk_sec)
+            self._max_chunk_frames = int(sample_rate * max_chunk_sec)
+            self._silence_frames = int(sample_rate * silence_duration_sec)
+            self._silence_rms_threshold = silence_rms_threshold
+            self._consecutive_silent_frames = 0
+            self.chunk_frames = self._max_chunk_frames  # for flush() / fixed fallback
+        else:
+            self.chunk_frames = int(sample_rate * chunk_duration_sec)
+            self._min_chunk_frames = self._max_chunk_frames = self._silence_frames = 0
+
     def push_stereo(self, stereo_frames: np.ndarray):
-        """Accept a block of stereo (frames x 2). When we have enough for a chunk, write WAV and callback."""
+        """Accept a block of stereo (frames x 2). When chunk condition is met, write WAV and callback."""
         if stereo_frames is None or stereo_frames.size == 0:
             return
         with self._lock:
             self._buffer.append(stereo_frames.copy())
-            self._buffer_frames += len(stereo_frames)
-            if self._buffer_frames >= self.chunk_frames:
-                self._flush_chunk_locked()
+            n = len(stereo_frames)
+            self._buffer_frames += n
 
-    def _flush_chunk_locked(self):
+            if self._use_silence_chunking:
+                if _is_silent_block(stereo_frames, self._silence_rms_threshold):
+                    self._consecutive_silent_frames += n
+                else:
+                    self._consecutive_silent_frames = 0
+
+                if self._buffer_frames >= self._max_chunk_frames:
+                    self._flush_full_buffer_locked()
+                elif (
+                    self._buffer_frames >= self._min_chunk_frames
+                    and self._consecutive_silent_frames >= self._silence_frames
+                ):
+                    self._flush_full_buffer_locked()
+            else:
+                if self._buffer_frames >= self.chunk_frames:
+                    self._flush_fixed_chunk_locked()
+
+    def _flush_full_buffer_locked(self):
+        """Emit the entire buffer as one chunk (silence-based or max reached)."""
+        if self._buffer_frames == 0:
+            return
+        concatenated = np.concatenate(self._buffer, axis=0)
+        self._buffer.clear()
+        self._buffer_frames = 0
+        self._consecutive_silent_frames = 0
+        remainder = np.array([], dtype=np.float32).reshape(0, 2)
+        self._write_chunk_locked(concatenated, remainder, pad_to_fixed=False)
+
+    def _flush_fixed_chunk_locked(self):
+        """Emit exactly chunk_frames; keep remainder (fixed-duration mode)."""
         if self._buffer_frames == 0:
             return
         concatenated = np.concatenate(self._buffer, axis=0)
         to_write = concatenated[: self.chunk_frames]
-        # Keep remainder in buffer (sliding window) so we never drop audio at chunk boundaries.
         remainder = concatenated[self.chunk_frames:]
         if len(remainder) > 0:
             self._buffer = [remainder]
@@ -63,7 +121,13 @@ class ChunkRecorder:
         else:
             self._buffer.clear()
             self._buffer_frames = 0
-        if len(to_write) < self.chunk_frames:
+        self._write_chunk_locked(to_write, remainder, pad_to_fixed=True)
+
+    def _write_chunk_locked(self, to_write: np.ndarray, remainder: np.ndarray, pad_to_fixed: bool = False):
+        """Convert to_write (stereo) to mono, optionally pad, resample, write WAV, invoke callback."""
+        if len(to_write) == 0:
+            return
+        if pad_to_fixed and len(to_write) < self.chunk_frames:
             pad = np.zeros((self.chunk_frames - len(to_write), 2), dtype=np.float32)
             to_write = np.concatenate([to_write, pad], axis=0)
         mono = np.mean(to_write, axis=1).astype(np.float32)
@@ -105,4 +169,7 @@ class ChunkRecorder:
         """Flush any remaining buffer as a final chunk."""
         with self._lock:
             if self._buffer_frames > 0:
-                self._flush_chunk_locked()
+                if self._use_silence_chunking:
+                    self._flush_full_buffer_locked()
+                else:
+                    self._flush_fixed_chunk_locked()

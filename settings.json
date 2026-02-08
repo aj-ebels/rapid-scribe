@@ -4,6 +4,10 @@
   "loopback_device_index": null,
   "transcription_model": "istupakov/parakeet-tdt-0.6b-v2-onnx",
   "chunk_duration_sec": 5.0,
+  "use_silence_chunking": true,
+  "min_chunk_sec": 1.5,
+  "max_chunk_sec": 8.0,
+  "silence_duration_sec": 0.5,
   "auto_generate_export_name": true,
   "export_prepend_date": true,
   "auto_generate_summary_when_stopping": false

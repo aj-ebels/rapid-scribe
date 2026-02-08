@@ -250,7 +250,19 @@ def start_stop(app):
             app.log.see("end")
             return
         try:
-            chunk_sec = app.settings.get("chunk_duration_sec")
+            use_silence = app.settings.get("use_silence_chunking", True)
+            min_sec = app.settings.get("min_chunk_sec", 1.5)
+            max_sec = app.settings.get("max_chunk_sec", 8.0)
+            silence_sec = app.settings.get("silence_duration_sec", 0.5)
+            if not isinstance(min_sec, (int, float)) or min_sec < 0.5 or min_sec > 10:
+                min_sec = 1.5
+            if not isinstance(max_sec, (int, float)) or max_sec < 3 or max_sec > 60:
+                max_sec = 8.0
+            if not isinstance(silence_sec, (int, float)) or silence_sec < 0.2 or silence_sec > 2:
+                silence_sec = 0.5
+            if min_sec > max_sec:
+                max_sec = min_sec
+            chunk_sec = app.settings.get("chunk_duration_sec", 5.0)  # fallback for fixed mode
             if not isinstance(chunk_sec, (int, float)) or chunk_sec < 3 or chunk_sec > 30:
                 chunk_sec = CHUNK_DURATION_SEC
             app.recorder = ChunkRecorder(
@@ -258,6 +270,10 @@ def start_stop(app):
                 chunk_duration_sec=float(chunk_sec),
                 asr_sample_rate=SAMPLE_RATE,
                 on_chunk_ready=lambda wav_path: meeting_chunk_ready(app, wav_path),
+                use_silence_chunking=use_silence,
+                min_chunk_sec=float(min_sec),
+                max_chunk_sec=float(max_sec),
+                silence_duration_sec=float(silence_sec),
             )
             app.mixer = AudioMixer(
                 sample_rate=CAPTURE_SAMPLE_RATE_MEETING,
