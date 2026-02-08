@@ -48,8 +48,9 @@ def generate_ai_summary(api_key, prompt_template, transcript, manual_notes=""):
     try:
         client = OpenAI(api_key=api_key)
         response = client.chat.completions.create(
-            model="gpt-4o-mini",
+            model="gpt-5.2",
             messages=[{"role": "user", "content": text}],
+            reasoning_effort="low",
         )
         content = response.choices[0].message.content
         return True, (content or "").strip()
