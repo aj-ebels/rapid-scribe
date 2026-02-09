@@ -664,6 +664,7 @@ def main():
     app.meetings_scroll.bind("<Configure>", _on_sidebar_inner_configure)
     app._update_sidebar_scrollbar_visibility = _update_sidebar_scrollbar_visibility
     app.new_meeting_btn = ctk.CTkButton(sidebar_frame, text="New Meeting", font=ctk.CTkFont(family=UI_FONT_FAMILY, size=F.small), height=32, corner_radius=UI_RADIUS, fg_color=COLORS["primary_fg"], hover_color=COLORS["primary_hover"])
+    app.new_meeting_btn.pack(fill="x", padx=UI_PAD, pady=(0, UI_PAD))
     sidebar_expand_btn = ctk.CTkButton(sidebar_frame, text="\u00BB", width=32, height=32, font=ctk.CTkFont(size=F.small), corner_radius=6, fg_color=COLORS["secondary_fg"], hover_color=COLORS["secondary_hover"], command=_toggle_sidebar)
 
     main_content = ctk.CTkFrame(content_frame, fg_color="transparent")
