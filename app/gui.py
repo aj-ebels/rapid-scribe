@@ -5,7 +5,7 @@ import math
 import sys
 import queue
 import threading
-from datetime import date
+from datetime import date, datetime
 from pathlib import Path
 
 import numpy as np
@@ -443,6 +443,18 @@ def main():
     _fs = lambda base: max(12, min(22, round(base * scale)))
     F = type("F", (), {"title": _fs(18), "header": _fs(16), "body": _fs(14), "small": _fs(13), "tiny": _fs(12)})()
 
+    def _format_iso_date(iso_str):
+        """Format ISO timestamp for display (e.g. 'Feb 9, 2025')."""
+        if not iso_str:
+            return ""
+        try:
+            dt = datetime.fromisoformat(iso_str.replace("Z", "+00:00"))
+            if dt.tzinfo:
+                dt = dt.replace(tzinfo=None)  # show local-style date
+            return dt.strftime("%b ") + str(dt.day) + dt.strftime(", %Y")
+        except Exception:
+            return str(iso_str)[:16]
+
     UI_RADIUS = 10
     UI_PAD = 12
     UI_PAD_LG = 16
@@ -839,8 +851,53 @@ def main():
     app.model_status_var.set("Transcription model: Loading…")
     threading.Thread(target=_run_startup_check, daemon=True).start()
 
-    # Transcript tab — three equal-width columns: Manual Notes | Transcript | AI Summary
-    # Use a 3-row grid so the large text boxes align across columns (row 2).
+    # Transcript tab — meeting name and dates at top, then three equal-width columns: Manual Notes | Transcript | AI Summary
+    meeting_name_row = ctk.CTkFrame(tab_transcript, fg_color="transparent")
+    meeting_name_row.pack(fill="x", padx=UI_PAD_LG, pady=(UI_PAD, 0))
+    meeting_name_row.grid_columnconfigure(0, weight=1)
+    name_line = ctk.CTkFrame(meeting_name_row, fg_color="transparent")
+    name_line.grid(row=0, column=0, sticky="w")
+    ctk.CTkLabel(name_line, text="Meeting name:", font=ctk.CTkFont(family=UI_FONT_FAMILY, size=F.small)).pack(side="left", padx=(0, 4), pady=4)
+    app.meeting_name_var = ctk.StringVar(value="New Meeting")
+    app.meeting_name_entry = ctk.CTkEntry(name_line, textvariable=app.meeting_name_var, width=280, height=28, placeholder_text="e.g. Team standup", font=ctk.CTkFont(family=UI_FONT_FAMILY, size=F.small))
+    app.meeting_name_entry.pack(side="left", padx=4, pady=4)
+    def _do_generate_meeting_name():
+        api_key = get_openai_api_key()
+        if not api_key:
+            messagebox.showerror("API key required", "Add your OpenAI API key in Settings.", parent=root)
+            return
+        summary = app.summary_text.get("1.0", "end").strip()
+        if not summary:
+            return
+        app.generate_name_btn.configure(state="disabled")
+        result_holder = []
+        def worker():
+            name_ok, name_result = generate_export_name(api_key, summary[:250])
+            result_holder.append((name_ok, name_result))
+        def check_done():
+            if not result_holder:
+                root.after(200, check_done)
+                return
+            name_ok, name_result = result_holder[0]
+            app.generate_name_btn.configure(state="normal" if (app.summary_text.get("1.0", "end").strip() != "") else "disabled")
+            if name_ok and name_result:
+                safe = "".join(c if c.isalnum() or c in "._- " else "-" for c in name_result)
+                safe = safe.replace(" ", "-").strip("-") or name_result
+                app.meeting_name_var.set(safe)
+            elif not name_ok:
+                messagebox.showerror("Generate name failed", name_result, parent=root)
+        threading.Thread(target=worker, daemon=True).start()
+        root.after(200, check_done)
+    app.generate_name_btn = ctk.CTkButton(name_line, text="Generate name", font=ctk.CTkFont(family=UI_FONT_FAMILY, size=F.small), width=100, height=28, corner_radius=UI_RADIUS, fg_color=COLORS["secondary_fg"], hover_color=COLORS["secondary_hover"], command=_do_generate_meeting_name, state="disabled")
+    app.generate_name_btn.pack(side="left", padx=4, pady=4)
+    def _update_generate_name_btn_state():
+        has_summary = bool(getattr(app, "summary_text", None) and app.summary_text.get("1.0", "end").strip())
+        app.generate_name_btn.configure(state="normal" if has_summary else "disabled")
+    app._update_generate_name_btn_state = _update_generate_name_btn_state
+    app.meeting_dates_var = ctk.StringVar(value="")
+    meeting_dates_lbl = ctk.CTkLabel(meeting_name_row, textvariable=app.meeting_dates_var, font=ctk.CTkFont(family=UI_FONT_FAMILY, size=F.tiny), text_color="gray", anchor="w")
+    meeting_dates_lbl.grid(row=1, column=0, sticky="w", padx=0, pady=(0, 4))
+
     card = ctk.CTkFrame(tab_transcript, fg_color="transparent")
     card.pack(fill="both", expand=True)
     for col in (0, 1, 2):
@@ -942,24 +999,14 @@ def main():
         app._summary_generating = True
         _start_summary_pulse(app)
         result_holder = []
-        name_val = (app.meeting_name_var.get() or "").strip()
-        want_auto_name = (
-            app.auto_generate_meeting_name_var.get()
-            and (not name_val or name_val == "New Meeting")
-        )
         def worker():
             ok, out = generate_ai_summary(api_key, prompt_obj["prompt"], transcript, manual_notes=manual_notes)
-            generated_name = None
-            if ok and want_auto_name and (out or "").strip():
-                name_ok, name_result = generate_export_name(api_key, (out or "")[:250])
-                if name_ok and name_result:
-                    generated_name = name_result
-            result_holder.append((ok, out, generated_name))
+            result_holder.append((ok, out))
         def check_done():
             if not result_holder:
                 root.after(200, check_done)
                 return
-            ok, out, generated_name = result_holder[0]
+            ok, out = result_holder[0]
             app._summary_generating = False
             _clear_summary_pulse(app)
             app.summary_generate_btn.configure(state="normal")
@@ -967,10 +1014,7 @@ def main():
             if ok:
                 app.summary_text.delete("1.0", "end")
                 app.summary_text.insert("1.0", out)
-                if generated_name:
-                    safe = "".join(c if c.isalnum() or c in "._- " else "-" for c in generated_name)
-                    safe = safe.replace(" ", "-").strip("-") or generated_name
-                    app.meeting_name_var.set(safe)
+                app._update_generate_name_btn_state()
             else:
                 messagebox.showerror("AI Summary failed", out, parent=root)
         threading.Thread(target=worker, daemon=True).start()
@@ -1017,13 +1061,11 @@ def main():
 
     app.summary_text = ctk.CTkTextbox(card, wrap="word", font=ctk.CTkFont(family=MONO_FONT_FAMILY, size=F.body), corner_radius=8, border_width=0, fg_color=COLORS["textbox_bg"], border_spacing=UI_PAD)
     app.summary_text.grid(row=2, column=2, sticky="nsew", padx=(UI_PAD, UI_PAD_LG), pady=(0, UI_PAD))
+    app.summary_text.bind("<KeyRelease>", lambda e: app._update_generate_name_btn_state())
+    app._update_generate_name_btn_state()
 
     export_row = ctk.CTkFrame(tab_transcript, fg_color="transparent")
     export_row.pack(fill="x", pady=(UI_PAD, UI_PAD_LG), padx=UI_PAD_LG)
-    ctk.CTkLabel(export_row, text="Meeting name:", font=ctk.CTkFont(family=UI_FONT_FAMILY, size=F.small)).pack(side="left", padx=(UI_PAD, 4), pady=4)
-    app.meeting_name_var = ctk.StringVar(value="New Meeting")
-    app.meeting_name_entry = ctk.CTkEntry(export_row, textvariable=app.meeting_name_var, width=280, height=28, placeholder_text="e.g. Team standup", font=ctk.CTkFont(family=UI_FONT_FAMILY, size=F.small))
-    app.meeting_name_entry.pack(side="left", padx=4, pady=4)
     app.export_prepend_date_var = ctk.BooleanVar(value=app.settings.get("export_prepend_date", True))
     def _on_prepend_date_changed():
         app.settings["export_prepend_date"] = app.export_prepend_date_var.get()
@@ -1033,16 +1075,6 @@ def main():
         font=ctk.CTkFont(family=UI_FONT_FAMILY, size=F.small), command=_on_prepend_date_changed,
         border_width=1, corner_radius=3, checkbox_width=18, checkbox_height=18
     ).pack(side="left", padx=8, pady=4)
-    app.auto_generate_meeting_name_var = ctk.BooleanVar(value=app.settings.get("auto_generate_export_name", True))
-    def _on_auto_generate_meeting_name_changed():
-        app.settings["auto_generate_export_name"] = app.auto_generate_meeting_name_var.get()
-        save_settings(app.settings)
-    app.auto_generate_meeting_name_cb = ctk.CTkCheckBox(
-        export_row, text="Also AI-generate meeting name if blank/default", variable=app.auto_generate_meeting_name_var,
-        font=ctk.CTkFont(family=UI_FONT_FAMILY, size=F.small), command=_on_auto_generate_meeting_name_changed,
-        border_width=1, corner_radius=3, checkbox_width=18, checkbox_height=18
-    )
-    app.auto_generate_meeting_name_cb.pack(side="left", padx=8, pady=4)
     ctk.CTkButton(export_row, text="Export", font=ctk.CTkFont(family=UI_FONT_FAMILY, size=F.small), width=64, height=28, corner_radius=UI_RADIUS, fg_color=COLORS["secondary_fg"], hover_color=COLORS["secondary_hover"], command=_export_markdown).pack(side="left", padx=(0, 0), pady=4)
 
     # ----- Meeting instances: sync UI <-> current meeting, debounced save, sidebar list -----
@@ -1085,6 +1117,9 @@ def main():
                 pass
             app._save_meeting_after_id = None
         sync_ui_to_current_meeting()
+        meeting = get_meeting_by_id(app.meetings, app.current_meeting_id) if app.current_meeting_id else None
+        if meeting:
+            _set_meeting_dates_var(meeting)
         app.refresh_sidebar_meetings_list()
 
     def schedule_save_meeting():
@@ -1103,6 +1138,18 @@ def main():
 
     app.schedule_save_meeting = schedule_save_meeting
 
+    def _set_meeting_dates_var(meeting):
+        """Update the Created / Updated line from meeting dict."""
+        if not meeting:
+            app.meeting_dates_var.set("")
+            return
+        created = _format_iso_date(meeting.get("created_at"))
+        updated = _format_iso_date(meeting.get("updated_at"))
+        parts = [f"Created: {created}"] if created else []
+        if updated:
+            parts.append(f"Updated: {updated}")
+        app.meeting_dates_var.set("  ·  ".join(parts))
+
     def load_meeting_to_ui(meeting):
         if not meeting:
             return
@@ -1110,12 +1157,14 @@ def main():
         try:
             app.current_meeting_id = meeting["id"]
             app.meeting_name_var.set(meeting.get("meeting_name") or "New Meeting")
+            _set_meeting_dates_var(meeting)
             app.manual_notes.delete("1.0", "end")
             app.manual_notes.insert("1.0", meeting.get("manual_notes") or "")
             app.log.delete("1.0", "end")
             app.log.insert("1.0", meeting.get("transcript") or "")
             app.summary_text.delete("1.0", "end")
             app.summary_text.insert("1.0", meeting.get("ai_summary") or "")
+            app._update_generate_name_btn_state()
         finally:
             app._loading_meeting = False
 
@@ -1157,20 +1206,26 @@ def main():
             name = (m.get("meeting_name") or "New Meeting").strip()
             if len(name) > 28:
                 name = name[:25] + "..."
+            updated_str = _format_iso_date(m.get("updated_at"))
             row = ctk.CTkFrame(app.meetings_scroll, fg_color=COLORS["prompt_item_bg"], corner_radius=6, cursor="hand2")
             row.pack(fill="x", pady=2)
             row.grid_columnconfigure(0, weight=1, minsize=0)
             row.grid_columnconfigure(1, weight=0, minsize=32)
+            row.grid_rowconfigure(0, weight=0)
+            row.grid_rowconfigure(1, weight=0)
             is_current = mid == app.current_meeting_id
             if is_current:
                 row.configure(border_width=2, border_color=COLORS["primary_fg"])
             lbl = ctk.CTkLabel(row, text=name, font=ctk.CTkFont(family=UI_FONT_FAMILY, size=F.small), anchor="w")
-            lbl.grid(row=0, column=0, sticky="ew", padx=(UI_PAD, 4), pady=6)
+            lbl.grid(row=0, column=0, sticky="ew", padx=(UI_PAD, 4), pady=(4, 0))
+            date_lbl = ctk.CTkLabel(row, text=f"Updated {updated_str}" if updated_str else "", font=ctk.CTkFont(family=UI_FONT_FAMILY, size=F.tiny), anchor="w", text_color="gray")
+            date_lbl.grid(row=1, column=0, sticky="ew", padx=(UI_PAD, 4), pady=(0, 4))
             del_btn = ctk.CTkButton(row, text="\u2715", width=28, height=28, font=ctk.CTkFont(size=F.tiny), corner_radius=4, fg_color=COLORS["danger_fg"], hover_color=COLORS["danger_hover"])
-            del_btn.grid(row=0, column=1, padx=(0, 4), pady=4)
+            del_btn.grid(row=0, column=1, rowspan=2, padx=(0, 4), pady=4)
             del_btn.configure(command=lambda mid=mid: _delete_meeting(mid))
             row.bind("<Button-1>", lambda e, mid=mid: _select_meeting(mid))
             lbl.bind("<Button-1>", lambda e, mid=mid: _select_meeting(mid))
+            date_lbl.bind("<Button-1>", lambda e, mid=mid: _select_meeting(mid))
         app.new_meeting_btn.configure(command=_new_meeting)
         if getattr(app, "_update_sidebar_scrollbar_visibility", None) is not None:
             root.after_idle(app._update_sidebar_scrollbar_visibility)
