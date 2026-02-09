@@ -20,8 +20,8 @@ def _ensure_dir(path: str):
     os.makedirs(path, exist_ok=True)
 
 
-def _is_silent_block(stereo_frames: np.ndarray, threshold: float = 0.004) -> bool:
-    """True if the block has very low energy (mono RMS below threshold)."""
+def _is_silent_block(stereo_frames: np.ndarray, threshold: float = 0.005) -> bool:
+    """True if the block has very low energy (mono RMS below threshold). 0.005 is intentional to reduce ASR hallucination on near-silence."""
     mono = np.mean(stereo_frames, axis=1).astype(np.float64)
     rms = np.sqrt(np.mean(mono ** 2))
     return rms < threshold
@@ -48,7 +48,7 @@ class ChunkRecorder:
         min_chunk_sec: float = 1.5,
         max_chunk_sec: float = 8.0,
         silence_duration_sec: float = 0.5,
-        silence_rms_threshold: float = 0.004,
+        silence_rms_threshold: float = 0.005,
     ):
         self.sample_rate = sample_rate
         self.asr_sample_rate = asr_sample_rate

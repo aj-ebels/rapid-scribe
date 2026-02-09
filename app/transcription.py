@@ -7,7 +7,7 @@ import queue
 import sys
 from pathlib import Path
 
-from .settings import DEFAULT_TRANSCRIPTION_MODEL
+from .settings import DEFAULT_TRANSCRIPTION_MODEL, load_settings
 from .diagnostic import write as diag
 
 # Single default: used for dropdown default and for "Install model" (recommended model).
@@ -155,8 +155,9 @@ def uninstall_transcription_model(repo_id, revision_hashes):
         return False, str(e)
 
 
-# Chunks with RMS below this are not transcribed (reduces ASR hallucination on near-silence).
-MIN_RMS_TRANSCRIBE = 0.004
+# Default: chunks with RMS below this are not transcribed (reduces ASR hallucination on near-silence).
+# Can be overridden by settings["min_rms_transcribe"] (e.g. raise to 0.005–0.006 for noisier mics).
+MIN_RMS_TRANSCRIBE_DEFAULT = 0.005
 
 
 def transcription_worker(chunk_queue, text_queue, stop_event, model_id=None):
@@ -178,8 +179,12 @@ def transcription_worker(chunk_queue, text_queue, stop_event, model_id=None):
                 continue
             path = item[0] if isinstance(item, tuple) and len(item) >= 1 else item
             rms = item[1] if isinstance(item, tuple) and len(item) >= 2 else None
-            if rms is not None and rms < MIN_RMS_TRANSCRIBE:
-                diag("transcription_skipped_low_rms", path=path, rms=rms, threshold=MIN_RMS_TRANSCRIBE)
+            min_rms = load_settings().get("min_rms_transcribe", MIN_RMS_TRANSCRIBE_DEFAULT)
+            if not isinstance(min_rms, (int, float)) or min_rms <= 0:
+                min_rms = MIN_RMS_TRANSCRIBE_DEFAULT
+            min_rms = max(0.001, min(0.05, float(min_rms)))
+            if rms is not None and rms < min_rms:
+                diag("transcription_skipped_low_rms", path=path, rms=rms, threshold=min_rms)
                 try:
                     Path(path).unlink(missing_ok=True)
                 except Exception:

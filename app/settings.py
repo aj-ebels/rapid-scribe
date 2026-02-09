@@ -47,6 +47,7 @@ def load_settings(default_model=None):
         "min_chunk_sec": 1.5,
         "max_chunk_sec": 8.0,
         "silence_duration_sec": 0.5,
+        "min_rms_transcribe": 0.005,
         "auto_generate_export_name": True,
         "export_prepend_date": True,
         "auto_generate_summary_when_stopping": False,
@@ -71,6 +72,8 @@ def load_settings(default_model=None):
                 out["max_chunk_sec"] = max(3.0, min(60.0, float(data["max_chunk_sec"])))
             if "silence_duration_sec" in data and isinstance(data["silence_duration_sec"], (int, float)):
                 out["silence_duration_sec"] = max(0.2, min(2.0, float(data["silence_duration_sec"])))
+            if "min_rms_transcribe" in data and isinstance(data["min_rms_transcribe"], (int, float)):
+                out["min_rms_transcribe"] = max(0.001, min(0.05, float(data["min_rms_transcribe"])))
             if "auto_generate_export_name" in data:
                 out["auto_generate_export_name"] = bool(data["auto_generate_export_name"])
             if "export_prepend_date" in data:
