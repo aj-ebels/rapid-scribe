@@ -16,9 +16,14 @@ try:
 except AttributeError:
     pass
 
-from app.diagnostic import init as init_diagnostic
-from app.gui import main
-
 if __name__ == "__main__":
-    init_diagnostic()
-    main()
+    import multiprocessing
+    # Required for frozen (PyInstaller) apps on Windows so multiprocessing spawn works correctly.
+    multiprocessing.freeze_support()
+    # On Windows, spawn re-imports this module in the transcription subprocess. Only run the GUI
+    # in the main process so we don't open a second window when record is pressed.
+    if multiprocessing.current_process().name == "MainProcess":
+        from app.diagnostic import init as init_diagnostic
+        from app.gui import main
+        init_diagnostic()
+        main()
