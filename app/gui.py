@@ -18,6 +18,7 @@ try:
 except ImportError:
     PILImage = None
 
+from . import __version__ as app_version
 from .settings import load_settings, save_settings, AUDIO_MODE_DEFAULT, AUDIO_MODE_LOOPBACK, AUDIO_MODE_MEETING
 from .devices import list_audio_devices, list_loopback_devices, get_default_monitor_device, get_effective_audio_device
 from .prompts import load_prompts, add_prompt, update_prompt, delete_prompt, get_prompt_by_id, TRANSCRIPT_PLACEHOLDER, MANUAL_NOTES_PLACEHOLDER
@@ -542,7 +543,7 @@ def main():
         MONO_FONT_FAMILY = "Ubuntu Mono"
 
     root = ctk.CTk()
-    root.title("Blue Bridge Meeting Companion")
+    root.title(f"Blue Bridge Meeting Companion v{app_version}")
     _icon = _base / "icon.ico"
     if _icon.exists():
         try:
