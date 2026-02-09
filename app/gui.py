@@ -62,17 +62,20 @@ if sys.platform == "win32":
 
 
 def poll_text_queue(app):
-    """Called periodically from main thread to append new transcript text."""
-    appended = False
+    """Called periodically from main thread to append new transcript text.
+    Drains all available lines then does a single insert/scroll (batched update)
+    to reduce UI work when multiple chunks complete in one poll tick."""
+    lines = []
     try:
         while True:
             line = app.text_queue.get_nowait()
-            app.log.insert("end", line)
-            app.log.see("end")
-            appended = True
+            lines.append(line)
     except queue.Empty:
         pass
-    if appended and getattr(app, "schedule_save_meeting", None) is not None:
+    if lines:
+        app.log.insert("end", "".join(lines))
+        app.log.see("end")
+    if lines and getattr(app, "schedule_save_meeting", None) is not None:
         app.schedule_save_meeting()
     # Drain live level updates and show latest
     if getattr(app, "level_queue", None) is not None:

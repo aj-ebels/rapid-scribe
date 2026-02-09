@@ -5,7 +5,7 @@ pyaudiowpatch>=0.2.12.7; sys_platform == "win32"
 numpy>=1.24.0
 scipy>=1.10.0
 customtkinter>=5.2.0
-# Parakeet via onnx-asr (same approach as Meetily). Use [gpu,hub] for CUDA.
+# Parakeet via onnx-asr (same approach as Meetily). For GPU: pip install "onnx-asr[gpu,hub]>=0.10.0"
 onnx-asr[cpu,hub]>=0.10.0
 # OpenAI API for AI Summary
 openai>=1.0.0
