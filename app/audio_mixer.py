@@ -1,7 +1,9 @@
 """
 In-process WASAPI mic + loopback capture (PyAudioWPatch).
-Single thread: mic read is blocking (steady stream); loopback is read only when
-data is available (get_read_available), otherwise silence — so loopback never blocks the mic.
+Single thread: mic read is blocking (steady stream). Loopback is drained into a
+time-aligned ring buffer; each block consumes exactly the loopback samples that
+correspond to that block's duration, so the loopback timeline is continuous and
+transcription quality is preserved.
 Output: stereo callback with Left=mic, Right=loopback at capture sample rate.
 """
 
@@ -12,6 +14,9 @@ import numpy as np
 from scipy.signal import resample
 
 log = logging.getLogger(__name__)
+
+# Max loopback buffer: ~5 sec at 48 kHz so we stay time-aligned without unbounded growth
+MAX_LOOPBACK_BUF_SAMPLES = 240000
 
 try:
     import pyaudiowpatch as pyaudio
@@ -51,6 +56,8 @@ class AudioMixer:
         self._lock = threading.Lock()
         self._stereo_callback = None
         self._level_callback = None
+        # Time-aligned loopback: samples at loopback sample rate, consumed per block
+        self._loopback_buffer = []
 
     def set_stereo_callback(self, callback):
         """Set callable(stereo_frames: np.ndarray) invoked from capture thread for each block."""
@@ -64,9 +71,10 @@ class AudioMixer:
 
     def _run_capture(self):
         """
-        Mic is read blocking (steady stream). Loopback is read only when
-        data is available (get_read_available); when system is silent we use zeros.
-        This avoids blocking on loopback when there's no system audio.
+        Mic is read blocking (steady stream). Loopback is drained into a buffer;
+        each block consumes exactly the loopback samples for that block's duration,
+        then resamples to mic length. This keeps the loopback timeline continuous
+        so transcription of system audio (e.g. other participants) is usable.
         """
         while self._running:
             try:
@@ -82,32 +90,45 @@ class AudioMixer:
             n_mic = len(mic_mono)
             mic_rms = float(np.sqrt(np.mean(mic_mono.astype(np.float64) ** 2)))
 
+            # Drain all available loopback into the time-aligned buffer (non-blocking)
             try:
-                available = self._loopback_stream.get_read_available()
-                if available <= 0:
-                    loopback_mono = np.zeros(n_mic, dtype=np.float32)
-                else:
-                    to_read = min(available, self.frames_per_read)
+                while True:
+                    available = self._loopback_stream.get_read_available()
+                    if available <= 0:
+                        break
+                    to_read = min(available, self.frames_per_read * 2)
                     loopback_data = self._loopback_stream.read(to_read, exception_on_overflow=False)
                     if loopback_data is None or len(loopback_data) == 0:
-                        loopback_mono = np.zeros(n_mic, dtype=np.float32)
-                    else:
-                        loopback_mono = _bytes_to_float_mono(loopback_data, self._loopback_channels)
-                        # Resample loopback to output rate if device uses a different rate
-                        if self._loopback_sample_rate != self.sample_rate and len(loopback_mono) > 0:
-                            target_len = int(round(len(loopback_mono) * self.sample_rate / self._loopback_sample_rate))
-                            if target_len != len(loopback_mono):
-                                loopback_mono = resample(loopback_mono, target_len).astype(np.float32)
-                        if len(loopback_mono) < n_mic:
-                            loopback_mono = np.concatenate([
-                                loopback_mono,
-                                np.zeros(n_mic - len(loopback_mono), dtype=np.float32),
-                            ])
-                        elif len(loopback_mono) > n_mic:
-                            loopback_mono = loopback_mono[:n_mic]
+                        break
+                    chunk = _bytes_to_float_mono(loopback_data, self._loopback_channels)
+                    self._loopback_buffer.append(chunk)
+                    total = sum(arr.size for arr in self._loopback_buffer)
+                    if total > MAX_LOOPBACK_BUF_SAMPLES:
+                        flat = np.concatenate(self._loopback_buffer)
+                        self._loopback_buffer = [flat[-MAX_LOOPBACK_BUF_SAMPLES:]]
             except Exception as e:
                 log.exception("Loopback read failed: %s", e)
-                loopback_mono = np.zeros(n_mic, dtype=np.float32)
+
+            # Consume exactly the loopback samples that match this block's duration (time-aligned)
+            n_loopback_needed = int(round(n_mic * self._loopback_sample_rate / self._mic_sample_rate))
+            if n_loopback_needed <= 0:
+                n_loopback_needed = n_mic
+            flat = np.concatenate(self._loopback_buffer) if self._loopback_buffer else np.array([], dtype=np.float32)
+            if len(flat) >= n_loopback_needed:
+                loopback_chunk = flat[:n_loopback_needed].astype(np.float32)
+                remainder = flat[n_loopback_needed:]
+                self._loopback_buffer = [remainder] if len(remainder) > 0 else []
+            else:
+                loopback_chunk = np.zeros(n_loopback_needed, dtype=np.float32)
+                if len(flat) > 0:
+                    loopback_chunk[: len(flat)] = flat
+                self._loopback_buffer = []
+
+            # Resample loopback to output (mic) rate so we get exactly n_mic samples
+            if len(loopback_chunk) != n_mic:
+                loopback_mono = resample(loopback_chunk, n_mic).astype(np.float32)
+            else:
+                loopback_mono = loopback_chunk
 
             with self._lock:
                 level_cb = self._level_callback
