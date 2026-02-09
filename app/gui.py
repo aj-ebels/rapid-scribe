@@ -11,7 +11,7 @@ from pathlib import Path
 import numpy as np
 import customtkinter as ctk
 import sounddevice as sd
-from tkinter import messagebox, filedialog
+from tkinter import messagebox, filedialog, Canvas, Scrollbar
 
 try:
     from PIL import Image as PILImage
@@ -45,6 +45,15 @@ from .capture import (
 from .ai_summary import generate_ai_summary, generate_export_name
 from .api_key_storage import get_openai_api_key, set_openai_api_key, clear_openai_api_key
 from .diagnostic import write as diag
+from .meetings_storage import (
+    load_meetings,
+    save_meetings,
+    create_meeting,
+    get_meeting_by_id,
+    update_meeting_fields,
+    delete_meeting_by_id,
+    ensure_at_least_one_meeting,
+)
 
 if sys.platform == "win32":
     from .audio_mixer import AudioMixer
@@ -53,13 +62,17 @@ if sys.platform == "win32":
 
 def poll_text_queue(app):
     """Called periodically from main thread to append new transcript text."""
+    appended = False
     try:
         while True:
             line = app.text_queue.get_nowait()
             app.log.insert("end", line)
             app.log.see("end")
+            appended = True
     except queue.Empty:
         pass
+    if appended and getattr(app, "schedule_save_meeting", None) is not None:
+        app.schedule_save_meeting()
     # Drain live level updates and show latest
     if getattr(app, "level_queue", None) is not None:
         level = 0.0
@@ -565,6 +578,15 @@ def main():
     app.capture_threads = []
     app.settings = load_settings()
 
+    # Meeting instances: load list, ensure at least one, select first
+    app.meetings = load_meetings()
+    new_one = ensure_at_least_one_meeting(app.meetings)
+    if new_one is not None:
+        save_meetings(app.meetings)
+    app.current_meeting_id = app.meetings[0]["id"] if app.meetings else None
+    app._save_meeting_after_id = None
+    AUTO_SAVE_DELAY_MS = 1000
+
     # Attach pulse helpers to app so module-level start_stop() can call them
     app._start_transcript_pulse = _start_transcript_pulse
     app._clear_transcript_pulse = _clear_transcript_pulse
@@ -573,8 +595,79 @@ def main():
 
     content_frame = ctk.CTkFrame(root, fg_color="transparent")
     content_frame.pack(fill="both", expand=True, padx=UI_PAD, pady=UI_PAD)
+    content_frame.grid_rowconfigure(0, weight=1)
+    content_frame.grid_columnconfigure(0, weight=0)
+    content_frame.grid_columnconfigure(1, weight=1)
+
+    SIDEBAR_WIDTH = 220
+    SIDEBAR_COLLAPSED_WIDTH = 40
+    app.sidebar_collapsed = False
+    app.refresh_sidebar_meetings_list = lambda: None  # set after transcript tab
+
+    sidebar_frame = ctk.CTkFrame(content_frame, width=SIDEBAR_WIDTH, fg_color=COLORS["sidebar"], corner_radius=UI_RADIUS)
+    sidebar_frame.grid(row=0, column=0, sticky="nswe", padx=(0, UI_PAD))
+    sidebar_frame.grid_propagate(False)
+    sidebar_header = ctk.CTkFrame(sidebar_frame, fg_color="transparent")
+    sidebar_header.pack(fill="x", padx=UI_PAD, pady=(UI_PAD, 4))
+    ctk.CTkLabel(sidebar_header, text="Meetings", font=ctk.CTkFont(family=UI_FONT_FAMILY, size=F.header, weight="bold")).pack(side="left")
+    def _toggle_sidebar():
+        app.sidebar_collapsed = not app.sidebar_collapsed
+        if app.sidebar_collapsed:
+            sidebar_frame.configure(width=SIDEBAR_COLLAPSED_WIDTH)
+            sidebar_header.pack_forget()
+            app.sidebar_scroll_container.pack_forget()
+            app.new_meeting_btn.pack_forget()
+            sidebar_expand_btn.pack(fill="x", padx=4, pady=UI_PAD)
+        else:
+            sidebar_expand_btn.pack_forget()
+            sidebar_frame.configure(width=SIDEBAR_WIDTH)
+            sidebar_header.pack(fill="x", padx=UI_PAD, pady=(UI_PAD, 4))
+            app.sidebar_scroll_container.pack(fill="both", expand=True, padx=UI_PAD, pady=(0, UI_PAD))
+            app.new_meeting_btn.pack(fill="x", padx=UI_PAD, pady=(0, UI_PAD))
+            app.refresh_sidebar_meetings_list()
+    sidebar_collapse_btn = ctk.CTkButton(sidebar_header, text="\u00AB", width=28, height=28, font=ctk.CTkFont(size=F.small), corner_radius=6, fg_color=COLORS["secondary_fg"], hover_color=COLORS["secondary_hover"], command=_toggle_sidebar)
+    sidebar_collapse_btn.pack(side="right")
+    # Scrollable list with scrollbar only when content overflows
+    app.sidebar_scroll_container = ctk.CTkFrame(sidebar_frame, fg_color="transparent")
+    app.sidebar_scroll_container.pack(fill="both", expand=True, padx=UI_PAD, pady=(0, UI_PAD))
+    _sidebar_bg = COLORS["sidebar"][1] if ctk.get_appearance_mode() == "Dark" else COLORS["sidebar"][0]
+    app._sidebar_canvas = Canvas(app.sidebar_scroll_container, bg=_sidebar_bg, highlightthickness=0)
+    app._sidebar_scrollbar = Scrollbar(app.sidebar_scroll_container)
+    app._sidebar_canvas.pack(side="left", fill="both", expand=True)
+    app.meetings_scroll = ctk.CTkFrame(app._sidebar_canvas, fg_color="transparent")
+    app._sidebar_canvas_window = app._sidebar_canvas.create_window(0, 0, window=app.meetings_scroll, anchor="nw")
+    app._sidebar_canvas.configure(yscrollcommand=app._sidebar_scrollbar.set)
+    app._sidebar_scrollbar.configure(command=app._sidebar_canvas.yview)
+
+    def _on_sidebar_frame_configure(event, inner=app.meetings_scroll):
+        app._sidebar_canvas.itemconfig(app._sidebar_canvas_window, width=event.width)
+        inner.update_idletasks()
+        app._sidebar_canvas.configure(scrollregion=app._sidebar_canvas.bbox("all"))
+        _update_sidebar_scrollbar_visibility()
+
+    def _update_sidebar_scrollbar_visibility():
+        app.meetings_scroll.update_idletasks()
+        app._sidebar_canvas.update_idletasks()
+        req_h = app.meetings_scroll.winfo_reqheight()
+        vis_h = app._sidebar_canvas.winfo_height()
+        if req_h > vis_h and vis_h > 0:
+            app._sidebar_scrollbar.pack(side="right", fill="y")
+        else:
+            app._sidebar_scrollbar.pack_forget()
+
+    app._sidebar_canvas.bind("<Configure>", _on_sidebar_frame_configure)
+
+    def _on_sidebar_inner_configure(event, c=app._sidebar_canvas):
+        c.configure(scrollregion=c.bbox("all"))
+        root.after_idle(_update_sidebar_scrollbar_visibility)
+
+    app.meetings_scroll.bind("<Configure>", _on_sidebar_inner_configure)
+    app._update_sidebar_scrollbar_visibility = _update_sidebar_scrollbar_visibility
+    app.new_meeting_btn = ctk.CTkButton(sidebar_frame, text="New Meeting", font=ctk.CTkFont(family=UI_FONT_FAMILY, size=F.small), height=32, corner_radius=UI_RADIUS, fg_color=COLORS["primary_fg"], hover_color=COLORS["primary_hover"])
+    sidebar_expand_btn = ctk.CTkButton(sidebar_frame, text="\u00BB", width=32, height=32, font=ctk.CTkFont(size=F.small), corner_radius=6, fg_color=COLORS["secondary_fg"], hover_color=COLORS["secondary_hover"], command=_toggle_sidebar)
+
     main_content = ctk.CTkFrame(content_frame, fg_color="transparent")
-    main_content.pack(fill="both", expand=True)
+    main_content.grid(row=0, column=1, sticky="nswe")
 
     _icons_dir = _base / "assets" / "icons"
     _record_path = _icons_dir / "record.png"
@@ -842,9 +935,10 @@ def main():
         app._summary_generating = True
         _start_summary_pulse(app)
         result_holder = []
+        name_val = (app.meeting_name_var.get() or "").strip()
         want_auto_name = (
-            not (app.export_name_var.get() or "").strip()
-            and app.auto_generate_export_name_var.get()
+            app.auto_generate_meeting_name_var.get()
+            and (not name_val or name_val == "New Meeting")
         )
         def worker():
             ok, out = generate_ai_summary(api_key, prompt_obj["prompt"], transcript, manual_notes=manual_notes)
@@ -869,7 +963,7 @@ def main():
                 if generated_name:
                     safe = "".join(c if c.isalnum() or c in "._- " else "-" for c in generated_name)
                     safe = safe.replace(" ", "-").strip("-") or generated_name
-                    app.export_name_var.set(safe)
+                    app.meeting_name_var.set(safe)
             else:
                 messagebox.showerror("AI Summary failed", out, parent=root)
         threading.Thread(target=worker, daemon=True).start()
@@ -886,7 +980,7 @@ def main():
         if not summary and not transcript and not manual_notes:
             messagebox.showwarning("Nothing to export", "Add an AI summary, transcript, and/or manual notes first.", parent=root)
             return
-        name_part = (app.export_name_var.get() or "").strip()
+        name_part = (app.meeting_name_var.get() or "").strip()
         if name_part:
             name_part = "".join(c if c.isalnum() or c in "._- " else "-" for c in name_part)
             name_part = name_part.replace(" ", "-").strip("-") or "export"
@@ -919,30 +1013,178 @@ def main():
 
     export_row = ctk.CTkFrame(tab_transcript, fg_color="transparent")
     export_row.pack(fill="x", pady=(UI_PAD, UI_PAD_LG), padx=UI_PAD_LG)
-    ctk.CTkLabel(export_row, text="Export file name:", font=ctk.CTkFont(family=UI_FONT_FAMILY, size=F.small)).pack(side="left", padx=(UI_PAD, 4), pady=4)
-    app.export_name_var = ctk.StringVar(value="")
-    app.export_name_entry = ctk.CTkEntry(export_row, textvariable=app.export_name_var, width=280, height=28, placeholder_text="e.g. meeting-notes", font=ctk.CTkFont(family=UI_FONT_FAMILY, size=F.small))
-    app.export_name_entry.pack(side="left", padx=4, pady=4)
+    ctk.CTkLabel(export_row, text="Meeting name:", font=ctk.CTkFont(family=UI_FONT_FAMILY, size=F.small)).pack(side="left", padx=(UI_PAD, 4), pady=4)
+    app.meeting_name_var = ctk.StringVar(value="New Meeting")
+    app.meeting_name_entry = ctk.CTkEntry(export_row, textvariable=app.meeting_name_var, width=280, height=28, placeholder_text="e.g. Team standup", font=ctk.CTkFont(family=UI_FONT_FAMILY, size=F.small))
+    app.meeting_name_entry.pack(side="left", padx=4, pady=4)
     app.export_prepend_date_var = ctk.BooleanVar(value=app.settings.get("export_prepend_date", True))
     def _on_prepend_date_changed():
         app.settings["export_prepend_date"] = app.export_prepend_date_var.get()
         save_settings(app.settings)
     ctk.CTkCheckBox(
-        export_row, text="Prepend today's date", variable=app.export_prepend_date_var,
+        export_row, text="Prepend today's date to export file name", variable=app.export_prepend_date_var,
         font=ctk.CTkFont(family=UI_FONT_FAMILY, size=F.small), command=_on_prepend_date_changed,
         border_width=1, corner_radius=3, checkbox_width=18, checkbox_height=18
     ).pack(side="left", padx=8, pady=4)
-    app.auto_generate_export_name_var = ctk.BooleanVar(value=app.settings.get("auto_generate_export_name", True))
-    def _on_auto_generate_name_changed():
-        app.settings["auto_generate_export_name"] = app.auto_generate_export_name_var.get()
+    app.auto_generate_meeting_name_var = ctk.BooleanVar(value=app.settings.get("auto_generate_export_name", True))
+    def _on_auto_generate_meeting_name_changed():
+        app.settings["auto_generate_export_name"] = app.auto_generate_meeting_name_var.get()
         save_settings(app.settings)
-    app.auto_generate_export_name_cb = ctk.CTkCheckBox(
-        export_row, text="Also AI-generate file name if blank", variable=app.auto_generate_export_name_var,
-        font=ctk.CTkFont(family=UI_FONT_FAMILY, size=F.small), command=_on_auto_generate_name_changed,
+    app.auto_generate_meeting_name_cb = ctk.CTkCheckBox(
+        export_row, text="Also AI-generate meeting name if blank/default", variable=app.auto_generate_meeting_name_var,
+        font=ctk.CTkFont(family=UI_FONT_FAMILY, size=F.small), command=_on_auto_generate_meeting_name_changed,
         border_width=1, corner_radius=3, checkbox_width=18, checkbox_height=18
     )
-    app.auto_generate_export_name_cb.pack(side="left", padx=8, pady=4)
+    app.auto_generate_meeting_name_cb.pack(side="left", padx=8, pady=4)
     ctk.CTkButton(export_row, text="Export", font=ctk.CTkFont(family=UI_FONT_FAMILY, size=F.small), width=64, height=28, corner_radius=UI_RADIUS, fg_color=COLORS["secondary_fg"], hover_color=COLORS["secondary_hover"], command=_export_markdown).pack(side="left", padx=(0, 0), pady=4)
+
+    # ----- Meeting instances: sync UI <-> current meeting, debounced save, sidebar list -----
+    app._loading_meeting = False
+
+    def sync_ui_to_current_meeting():
+        """Read UI into current meeting dict; only update updated_at and re-sort when something changed."""
+        mid = app.current_meeting_id
+        if not mid:
+            return
+        meeting = get_meeting_by_id(app.meetings, mid)
+        if not meeting:
+            return
+        new_name = (app.meeting_name_var.get() or "").strip() or "New Meeting"
+        new_notes = app.manual_notes.get("1.0", "end").strip()
+        new_transcript = app.log.get("1.0", "end").strip()
+        new_summary = app.summary_text.get("1.0", "end").strip()
+        if (
+            meeting.get("meeting_name") == new_name
+            and meeting.get("manual_notes") == new_notes
+            and meeting.get("transcript") == new_transcript
+            and meeting.get("ai_summary") == new_summary
+        ):
+            return
+        update_meeting_fields(
+            meeting,
+            meeting_name=new_name,
+            manual_notes=new_notes,
+            transcript=new_transcript,
+            ai_summary=new_summary,
+        )
+        app.meetings.sort(key=lambda m: m.get("updated_at") or m.get("created_at") or "", reverse=True)
+        save_meetings(app.meetings)
+
+    def _do_save_meeting():
+        if app._save_meeting_after_id is not None:
+            try:
+                root.after_cancel(app._save_meeting_after_id)
+            except Exception:
+                pass
+            app._save_meeting_after_id = None
+        sync_ui_to_current_meeting()
+        app.refresh_sidebar_meetings_list()
+
+    def schedule_save_meeting():
+        if app._loading_meeting:
+            return
+        if app._save_meeting_after_id is not None:
+            try:
+                root.after_cancel(app._save_meeting_after_id)
+            except Exception:
+                pass
+        def run():
+            app._save_meeting_after_id = None
+            sync_ui_to_current_meeting()
+            app.refresh_sidebar_meetings_list()
+        app._save_meeting_after_id = root.after(AUTO_SAVE_DELAY_MS, run)
+
+    app.schedule_save_meeting = schedule_save_meeting
+
+    def load_meeting_to_ui(meeting):
+        if not meeting:
+            return
+        app._loading_meeting = True
+        try:
+            app.current_meeting_id = meeting["id"]
+            app.meeting_name_var.set(meeting.get("meeting_name") or "New Meeting")
+            app.manual_notes.delete("1.0", "end")
+            app.manual_notes.insert("1.0", meeting.get("manual_notes") or "")
+            app.log.delete("1.0", "end")
+            app.log.insert("1.0", meeting.get("transcript") or "")
+            app.summary_text.delete("1.0", "end")
+            app.summary_text.insert("1.0", meeting.get("ai_summary") or "")
+        finally:
+            app._loading_meeting = False
+
+    def _select_meeting(meeting_id):
+        _do_save_meeting()
+        m = get_meeting_by_id(app.meetings, meeting_id)
+        if m:
+            load_meeting_to_ui(m)
+        app.refresh_sidebar_meetings_list()
+
+    def _new_meeting():
+        _do_save_meeting()
+        new_m = create_meeting("New Meeting")
+        app.meetings.insert(0, new_m)
+        save_meetings(app.meetings)
+        load_meeting_to_ui(new_m)
+        app.refresh_sidebar_meetings_list()
+
+    def _delete_meeting(meeting_id, event=None):
+        if not messagebox.askyesno("Delete meeting", "Delete this meeting? This cannot be undone.", parent=root):
+            return
+        _do_save_meeting()
+        delete_meeting_by_id(app.meetings, meeting_id)
+        save_meetings(app.meetings)
+        if not app.meetings:
+            ensure_at_least_one_meeting(app.meetings)
+            save_meetings(app.meetings)
+        next_m = app.meetings[0] if app.meetings else None
+        if next_m:
+            load_meeting_to_ui(next_m)
+        app.refresh_sidebar_meetings_list()
+
+    def refresh_sidebar_meetings_list():
+        for w in app.meetings_scroll.winfo_children():
+            w.destroy()
+        # List already sorted by updated_at desc from load_meetings / after save
+        for m in app.meetings:
+            mid = m.get("id")
+            name = (m.get("meeting_name") or "New Meeting").strip()
+            if len(name) > 28:
+                name = name[:25] + "..."
+            row = ctk.CTkFrame(app.meetings_scroll, fg_color=COLORS["prompt_item_bg"], corner_radius=6, cursor="hand2")
+            row.pack(fill="x", pady=2)
+            row.grid_columnconfigure(0, weight=1, minsize=0)
+            row.grid_columnconfigure(1, weight=0, minsize=32)
+            is_current = mid == app.current_meeting_id
+            if is_current:
+                row.configure(border_width=2, border_color=COLORS["primary_fg"])
+            lbl = ctk.CTkLabel(row, text=name, font=ctk.CTkFont(family=UI_FONT_FAMILY, size=F.small), anchor="w")
+            lbl.grid(row=0, column=0, sticky="ew", padx=(UI_PAD, 4), pady=6)
+            del_btn = ctk.CTkButton(row, text="\u2715", width=28, height=28, font=ctk.CTkFont(size=F.tiny), corner_radius=4, fg_color=COLORS["danger_fg"], hover_color=COLORS["danger_hover"])
+            del_btn.grid(row=0, column=1, padx=(0, 4), pady=4)
+            del_btn.configure(command=lambda mid=mid: _delete_meeting(mid))
+            row.bind("<Button-1>", lambda e, mid=mid: _select_meeting(mid))
+            lbl.bind("<Button-1>", lambda e, mid=mid: _select_meeting(mid))
+        app.new_meeting_btn.configure(command=_new_meeting)
+        if getattr(app, "_update_sidebar_scrollbar_visibility", None) is not None:
+            root.after_idle(app._update_sidebar_scrollbar_visibility)
+
+    app.refresh_sidebar_meetings_list = refresh_sidebar_meetings_list
+    refresh_sidebar_meetings_list()
+    load_meeting_to_ui(get_meeting_by_id(app.meetings, app.current_meeting_id))
+
+    def _on_meeting_name_changed(*args):
+        schedule_save_meeting()
+    app.meeting_name_var.trace_add("write", _on_meeting_name_changed)
+
+    def _on_manual_notes_changed(event=None):
+        schedule_save_meeting()
+    app.manual_notes.bind("<KeyRelease>", _on_manual_notes_changed)
+    def _on_transcript_changed(event=None):
+        schedule_save_meeting()
+    app.log.bind("<KeyRelease>", _on_transcript_changed)
+    def _on_summary_changed(event=None):
+        schedule_save_meeting()
+    app.summary_text.bind("<KeyRelease>", _on_summary_changed)
 
     # AI Prompts tab
     prompts_header = ctk.CTkFrame(tab_prompts, fg_color="transparent")

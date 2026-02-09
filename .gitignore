@@ -3,5 +3,6 @@ build/
 dist/
 installer_output/
 prompts.json
+meetings.json
 .env
 __pycache__/
