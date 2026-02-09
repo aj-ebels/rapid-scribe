@@ -160,8 +160,25 @@ def uninstall_transcription_model(repo_id, revision_hashes):
 MIN_RMS_TRANSCRIBE_DEFAULT = 0.005
 
 
+def start_transcription_subprocess(chunk_queue, text_queue, stop_event, model_id=None):
+    """
+    Start the transcription worker in a separate process to avoid GIL contention with
+    the GUI and audio capture. Use multiprocessing.Queue for chunk_queue/text_queue
+    and multiprocessing.Event for stop_event. Returns the started Process.
+    """
+    import multiprocessing
+    proc = multiprocessing.Process(
+        target=transcription_worker,
+        args=(chunk_queue, text_queue, stop_event, model_id),
+        daemon=True,
+    )
+    proc.start()
+    return proc
+
+
 def transcription_worker(chunk_queue, text_queue, stop_event, model_id=None):
-    """Take WAV paths (or (path, rms)) from chunk_queue, transcribe with selected model, push text to text_queue, delete file."""
+    """Take WAV paths (or (path, rms)) from chunk_queue, transcribe with selected model, push text to text_queue, delete file.
+    Intended to run in a subprocess (via start_transcription_subprocess) to avoid holding the GIL in the main process."""
     try:
         model = get_transcription_model(model_id or PARAKEET_MODEL)
         diag("transcription_model_loaded", model_id=model_id or PARAKEET_MODEL)

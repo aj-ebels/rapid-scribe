@@ -2,6 +2,7 @@
 GUI and app controller: CustomTkinter window, tabs, start/stop recording, prompts dialog.
 """
 import math
+import multiprocessing
 import sys
 import queue
 import threading
@@ -30,7 +31,7 @@ from .transcription import (
     list_installed_transcription_models,
     uninstall_transcription_model,
     download_transcription_model,
-    transcription_worker,
+    start_transcription_subprocess,
 )
 from .capture import (
     capture_worker,
@@ -200,8 +201,11 @@ def start_stop(app):
         for t in getattr(app, "capture_threads", []) or ([app.capture_thread] if app.capture_thread else []):
             if t and t.is_alive():
                 t.join(timeout=CHUNK_DURATION_SEC + 2)
-        if app.transcription_thread and app.transcription_thread.is_alive():
-            app.transcription_thread.join(timeout=10)
+        if app.transcription_process and app.transcription_process.is_alive():
+            app.transcription_process.join(timeout=10)
+            if app.transcription_process.is_alive():
+                app.transcription_process.terminate()
+                app.transcription_process.join(timeout=2)
         if getattr(app, "stop_btn", None) is not None:
             app.start_btn.configure(state="normal")
             app.stop_btn.configure(state="disabled")
@@ -326,12 +330,9 @@ def start_stop(app):
     if app.capture_thread:
         app.capture_thread.start()
     model_id = STANDARD_TRANSCRIPTION_MODEL
-    app.transcription_thread = threading.Thread(
-        target=transcription_worker,
-        args=(app.chunk_queue, app.text_queue, app.stop_event, model_id),
-        daemon=True,
+    app.transcription_process = start_transcription_subprocess(
+        app.chunk_queue, app.text_queue, app.stop_event, model_id
     )
-    app.transcription_thread.start()
     app.running = True
     _start = getattr(app, "_start_transcript_pulse", None)
     if _start is not None:
@@ -587,12 +588,13 @@ def main():
     app = type("App", (), {})()
     app.root = root
     app.running = False
-    app.stop_event = threading.Event()
-    app.chunk_queue = queue.Queue(maxsize=1)
-    app.text_queue = queue.Queue()
+    # Use multiprocessing primitives so transcription can run in a subprocess (avoids GIL contention with GUI/Teams).
+    app.stop_event = multiprocessing.Event()
+    app.chunk_queue = multiprocessing.Queue(maxsize=1)
+    app.text_queue = multiprocessing.Queue()
     app.level_queue = queue.Queue(maxsize=32)
     app.capture_thread = None
-    app.transcription_thread = None
+    app.transcription_process = None
     app.capture_threads = []
     app.settings = load_settings()
 
