@@ -51,6 +51,7 @@ def load_settings(default_model=None):
         "auto_generate_export_name": True,
         "export_prepend_date": True,
         "auto_generate_summary_when_stopping": False,
+        "ui_scale": None,  # None = auto (DPI-based); else float 0.5–2.0 for manual scale
     }
     if not SETTINGS_FILE.exists():
         return out
@@ -80,6 +81,12 @@ def load_settings(default_model=None):
                 out["export_prepend_date"] = bool(data["export_prepend_date"])
             if "auto_generate_summary_when_stopping" in data:
                 out["auto_generate_summary_when_stopping"] = bool(data["auto_generate_summary_when_stopping"])
+            if "ui_scale" in data:
+                v = data["ui_scale"]
+                if v is None:
+                    out["ui_scale"] = None
+                elif isinstance(v, (int, float)):
+                    out["ui_scale"] = max(0.5, min(2.0, float(v)))
     except Exception:
         pass
     return out

@@ -11,5 +11,6 @@
   "min_rms_transcribe": 0.005,
   "auto_generate_export_name": true,
   "export_prepend_date": true,
-  "auto_generate_summary_when_stopping": false
+  "auto_generate_summary_when_stopping": false,
+  "ui_scale": null
 }

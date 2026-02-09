@@ -431,7 +431,13 @@ def main():
         ctk.set_default_color_theme(str(theme_path))
     else:
         ctk.set_default_color_theme("dark-blue")
-    scale = _get_dpi_scale()
+    # Use saved UI scale if set; otherwise auto-detect from DPI (can be large on high-DPI/multi-monitor)
+    _initial_settings = load_settings()
+    _saved_scale = _initial_settings.get("ui_scale")
+    if _saved_scale is not None and isinstance(_saved_scale, (int, float)):
+        scale = max(0.5, min(2.0, float(_saved_scale)))
+    else:
+        scale = _get_dpi_scale()
     ctk.set_widget_scaling(scale)
     ctk.set_window_scaling(scale)
     _fs = lambda base: max(12, min(22, round(base * scale)))
@@ -1225,6 +1231,36 @@ def main():
     # Settings tab
     settings_card = ctk.CTkFrame(tab_settings, fg_color="transparent")
     settings_card.pack(fill="both", expand=True, padx=UI_PAD_LG, pady=UI_PAD)
+
+    # Interface scale (backup when auto DPI makes UI too large or too small)
+    UI_SCALE_OPTIONS = [
+        ("Auto (recommended)", None),
+        ("70%", 0.7),
+        ("80%", 0.8),
+        ("90%", 0.9),
+        ("100%", 1.0),
+        ("110%", 1.1),
+        ("125%", 1.25),
+        ("150%", 1.5),
+    ]
+    scale_labels = [t[0] for t in UI_SCALE_OPTIONS]
+    label_to_scale = {t[0]: t[1] for t in UI_SCALE_OPTIONS}
+    _ui_scale_val = app.settings.get("ui_scale")
+    if _ui_scale_val is None:
+        _initial_scale_label = "Auto (recommended)"
+    else:
+        _closest = min(UI_SCALE_OPTIONS[1:], key=lambda t: abs((t[1] or 1.0) - _ui_scale_val))
+        _initial_scale_label = _closest[0]
+    ctk.CTkLabel(settings_card, text="Interface scale", font=ctk.CTkFont(family=UI_FONT_FAMILY, size=F.header, weight="bold")).pack(anchor="w", pady=(0, 4))
+    ctk.CTkLabel(settings_card, text="If the app looks too large or too small on your display, choose a fixed scale. Restart the app for changes to take effect.", font=ctk.CTkFont(family=UI_FONT_FAMILY, size=F.small), text_color="gray", wraplength=520, anchor="w").pack(anchor="w", pady=(0, 6))
+    app.ui_scale_var = ctk.StringVar(value=_initial_scale_label)
+    def _on_ui_scale_change(choice):
+        val = label_to_scale.get(choice)
+        app.settings["ui_scale"] = val
+        save_settings(app.settings)
+        messagebox.showinfo("Scale saved", "Restart the app for the new scale to take effect.", parent=root)
+    app.ui_scale_menu = ctk.CTkOptionMenu(settings_card, values=scale_labels, variable=app.ui_scale_var, width=220, font=ctk.CTkFont(family=UI_FONT_FAMILY, size=F.small), command=_on_ui_scale_change)
+    app.ui_scale_menu.pack(anchor="w", pady=(0, UI_PAD_LG))
 
     # OpenAI API key (stored securely in user app data)
     ctk.CTkLabel(settings_card, text="OpenAI API key", font=ctk.CTkFont(family=UI_FONT_FAMILY, size=F.header, weight="bold")).pack(anchor="w", pady=(0, 4))
