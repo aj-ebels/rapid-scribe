@@ -266,8 +266,20 @@ def start_stop(app):
             chunk_sec = app.settings.get("chunk_duration_sec", 5.0)  # fallback for fixed mode
             if not isinstance(chunk_sec, (int, float)) or chunk_sec < 3 or chunk_sec > 30:
                 chunk_sec = CHUNK_DURATION_SEC
-            app.recorder = ChunkRecorder(
+            app.mixer = AudioMixer(
                 sample_rate=CAPTURE_SAMPLE_RATE_MEETING,
+                frames_per_read=FRAMES_PER_READ_MEETING,
+                gain=MIXER_GAIN_MEETING,
+            )
+            def _push_level(rms):
+                try:
+                    app.level_queue.put_nowait(rms)
+                except queue.Full:
+                    pass
+            app.mixer.set_level_callback(_push_level)
+            app.mixer.start(loopback_device_index=loopback_idx, mic_device_index=mic_idx)
+            app.recorder = ChunkRecorder(
+                sample_rate=app.mixer.sample_rate,
                 chunk_duration_sec=float(chunk_sec),
                 asr_sample_rate=SAMPLE_RATE,
                 on_chunk_ready=lambda wav_path, rms: meeting_chunk_ready(app, wav_path, rms),
@@ -276,19 +288,7 @@ def start_stop(app):
                 max_chunk_sec=float(max_sec),
                 silence_duration_sec=float(silence_sec),
             )
-            app.mixer = AudioMixer(
-                sample_rate=CAPTURE_SAMPLE_RATE_MEETING,
-                frames_per_read=FRAMES_PER_READ_MEETING,
-                gain=MIXER_GAIN_MEETING,
-            )
             app.mixer.set_stereo_callback(app.recorder.push_stereo)
-            def _push_level(rms):
-                try:
-                    app.level_queue.put_nowait(rms)
-                except queue.Full:
-                    pass
-            app.mixer.set_level_callback(_push_level)
-            app.mixer.start(loopback_device_index=loopback_idx, mic_device_index=None)
             app.capture_thread = None
             app.capture_threads = []
             app.status_var.set("Meeting (mic + loopback) — recording…")

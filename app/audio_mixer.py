@@ -9,6 +9,7 @@ import logging
 import threading
 import time
 import numpy as np
+from scipy.signal import resample
 
 log = logging.getLogger(__name__)
 
@@ -43,6 +44,8 @@ class AudioMixer:
         self._loopback_stream = None
         self._mic_channels = 1
         self._loopback_channels = 1
+        self._mic_sample_rate = None  # native mic rate (may differ from loopback)
+        self._loopback_sample_rate = None
         self._running = False
         self._thread = None
         self._lock = threading.Lock()
@@ -90,6 +93,11 @@ class AudioMixer:
                         loopback_mono = np.zeros(n_mic, dtype=np.float32)
                     else:
                         loopback_mono = _bytes_to_float_mono(loopback_data, self._loopback_channels)
+                        # Resample loopback to output rate if device uses a different rate
+                        if self._loopback_sample_rate != self.sample_rate and len(loopback_mono) > 0:
+                            target_len = int(round(len(loopback_mono) * self.sample_rate / self._loopback_sample_rate))
+                            if target_len != len(loopback_mono):
+                                loopback_mono = resample(loopback_mono, target_len).astype(np.float32)
                         if len(loopback_mono) < n_mic:
                             loopback_mono = np.concatenate([
                                 loopback_mono,
@@ -160,22 +168,60 @@ class AudioMixer:
         self._loopback_channels = max(1, int(loopback_info.get("maxInputChannels", 1)))
         self._mic_channels = max(1, int(mic_info.get("maxInputChannels", 1)))
 
-        self._loopback_stream = self._p.open(
-            format=PA_FORMAT,
-            channels=self._loopback_channels,
-            rate=self.sample_rate,
-            frames_per_buffer=self.frames_per_read,
-            input=True,
-            input_device_index=loopback_info["index"],
-        )
-        self._mic_stream = self._p.open(
-            format=PA_FORMAT,
-            channels=self._mic_channels,
-            rate=self.sample_rate,
-            frames_per_buffer=self.frames_per_read,
-            input=True,
-            input_device_index=default_input_index,
-        )
+        # Open each device at its native default sample rate (avoids -9997 when dock/mic differ)
+        def _device_rate(info, fallback=48000):
+            r = info.get("defaultSampleRate") or fallback
+            r = int(r) if r else fallback
+            return r if r > 0 else fallback
+
+        self._loopback_sample_rate = _device_rate(loopback_info)
+        self._mic_sample_rate = _device_rate(mic_info)
+        self.sample_rate = self._mic_sample_rate  # output rate = mic rate; loopback resampled in loop
+
+        try:
+            self._loopback_stream = self._p.open(
+                format=PA_FORMAT,
+                channels=self._loopback_channels,
+                rate=self._loopback_sample_rate,
+                frames_per_buffer=self.frames_per_read,
+                input=True,
+                input_device_index=loopback_info["index"],
+            )
+        except OSError as e:
+            self._p.terminate()
+            self._p = None
+            raise RuntimeError(
+                "Loopback device does not support its default rate %d Hz: %s"
+                % (self._loopback_sample_rate, e)
+            ) from e
+        try:
+            self._mic_stream = self._p.open(
+                format=PA_FORMAT,
+                channels=self._mic_channels,
+                rate=self._mic_sample_rate,
+                frames_per_buffer=self.frames_per_read,
+                input=True,
+                input_device_index=default_input_index,
+            )
+        except OSError as e:
+            try:
+                self._loopback_stream.stop_stream()
+                self._loopback_stream.close()
+            except Exception:
+                pass
+            self._p.terminate()
+            self._p = None
+            raise RuntimeError(
+                "Microphone does not support its default rate %d Hz: %s"
+                % (self._mic_sample_rate, e)
+            ) from e
+
+        if self._mic_sample_rate != self.sample_rate or self._loopback_sample_rate != self.sample_rate:
+            log.info(
+                "Meeting capture: mic=%d Hz, loopback=%d Hz, output=%d Hz.",
+                self._mic_sample_rate, self._loopback_sample_rate, self.sample_rate,
+            )
+
         self._running = True
         self._thread = threading.Thread(target=self._run_capture, daemon=True)
         self._thread.start()
