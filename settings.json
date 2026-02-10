@@ -12,5 +12,6 @@
   "auto_generate_export_name": true,
   "export_prepend_date": true,
   "auto_generate_summary_when_stopping": false,
+  "auto_save_delay_seconds": 1,
   "ui_scale": null
 }

@@ -608,7 +608,6 @@ def main():
         save_meetings(app.meetings)
     app.current_meeting_id = app.meetings[0]["id"] if app.meetings else None
     app._save_meeting_after_id = None
-    AUTO_SAVE_DELAY_MS = 1000
 
     # Attach pulse helpers to app so module-level start_stop() can call them
     app._start_transcript_pulse = _start_transcript_pulse
@@ -1020,6 +1019,7 @@ def main():
                 app.summary_text.delete("1.0", "end")
                 app.summary_text.insert("1.0", out)
                 app._update_generate_name_btn_state()
+                app.schedule_save_meeting()
             else:
                 messagebox.showerror("AI Summary failed", out, parent=root)
         threading.Thread(target=worker, daemon=True).start()
@@ -1139,7 +1139,9 @@ def main():
             app._save_meeting_after_id = None
             sync_ui_to_current_meeting()
             app.refresh_sidebar_meetings_list()
-        app._save_meeting_after_id = root.after(AUTO_SAVE_DELAY_MS, run)
+        delay_sec = app.settings.get("auto_save_delay_seconds", 1)
+        delay_ms = max(1000, min(30000, int(delay_sec * 1000)))
+        app._save_meeting_after_id = root.after(delay_ms, run)
 
     app.schedule_save_meeting = schedule_save_meeting
 
@@ -1321,6 +1323,22 @@ def main():
         messagebox.showinfo("Scale saved", "Restart the app for the new scale to take effect.", parent=root)
     app.ui_scale_menu = ctk.CTkOptionMenu(settings_card, values=scale_labels, variable=app.ui_scale_var, width=220, font=ctk.CTkFont(family=UI_FONT_FAMILY, size=F.small), command=_on_ui_scale_change)
     app.ui_scale_menu.pack(anchor="w", pady=(0, UI_PAD_LG))
+
+    # Auto-save delay
+    ctk.CTkLabel(settings_card, text="Auto-save delay", font=ctk.CTkFont(family=UI_FONT_FAMILY, size=F.header, weight="bold")).pack(anchor="w", pady=(0, 4))
+    ctk.CTkLabel(settings_card, text="How long to wait after edits before saving the current meeting (notes, transcript, AI summary).", font=ctk.CTkFont(family=UI_FONT_FAMILY, size=F.small), text_color="gray", wraplength=520, anchor="w").pack(anchor="w", pady=(0, 6))
+    _auto_save_options = ["1 second", "2 seconds", "3 seconds", "5 seconds", "10 seconds"]
+    _auto_save_seconds = [1, 2, 3, 5, 10]
+    _auto_save_val = app.settings.get("auto_save_delay_seconds", 3)
+    _closest_i = min(range(len(_auto_save_seconds)), key=lambda i: abs(_auto_save_seconds[i] - _auto_save_val))
+    _auto_save_initial = _auto_save_options[_closest_i]
+    app.auto_save_delay_var = ctk.StringVar(value=_auto_save_initial)
+    def _on_auto_save_delay_change(choice):
+        sec = next((s for o, s in zip(_auto_save_options, _auto_save_seconds) if o == choice), 3)
+        app.settings["auto_save_delay_seconds"] = sec
+        save_settings(app.settings)
+    app.auto_save_delay_menu = ctk.CTkOptionMenu(settings_card, values=_auto_save_options, variable=app.auto_save_delay_var, width=160, font=ctk.CTkFont(family=UI_FONT_FAMILY, size=F.small), command=_on_auto_save_delay_change)
+    app.auto_save_delay_menu.pack(anchor="w", pady=(0, UI_PAD_LG))
 
     # OpenAI API key (stored securely in user app data)
     ctk.CTkLabel(settings_card, text="OpenAI API key", font=ctk.CTkFont(family=UI_FONT_FAMILY, size=F.header, weight="bold")).pack(anchor="w", pady=(0, 4))
