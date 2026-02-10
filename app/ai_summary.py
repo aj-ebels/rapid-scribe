@@ -70,7 +70,7 @@ def generate_export_name(api_key, summary_excerpt):
         return False, "Summary excerpt is empty."
 
     prompt = (
-        "Generate a very concise (a few words maximum, separated by spaces) file name (no extension) for this meeting summary. Examples: \"ABC Industries call\", \"conference debrief meeting\", \"product launch meeting\". Reply with only the suggested name, nothing else.\n\nSummary excerpt:\n" + excerpt[:250]
+        "Generate a very concise (a few words maximum) file name (no extension) for this meeting summary. Examples: \"ABC Industries call\", \"conference debrief meeting\", \"product launch meeting\". Reply with only the suggested name, nothing else.\n\nSummary excerpt:\n" + excerpt[:250]
     )
     try:
         from openai import OpenAI

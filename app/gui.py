@@ -885,8 +885,8 @@ def main():
             name_ok, name_result = result_holder[0]
             app.generate_name_btn.configure(state="normal" if (app.summary_text.get("1.0", "end").strip() != "") else "disabled")
             if name_ok and name_result:
-                safe = "".join(c if c.isalnum() or c in "._- " else "-" for c in name_result)
-                safe = safe.replace(" ", "-").strip("-") or name_result
+                safe = "".join(c if c.isalnum() or c in " ._-" else "-" for c in name_result)
+                safe = safe.strip() or name_result
                 app.meeting_name_var.set(safe)
             elif not name_ok:
                 messagebox.showerror("Generate name failed", name_result, parent=root)
@@ -1038,8 +1038,8 @@ def main():
             return
         name_part = (app.meeting_name_var.get() or "").strip()
         if name_part:
-            name_part = "".join(c if c.isalnum() or c in "._- " else "-" for c in name_part)
-            name_part = name_part.replace(" ", "-").strip("-") or "export"
+            name_part = "".join(c if c.isalnum() or c in " ._-" else "-" for c in name_part)
+            name_part = name_part.strip() or "export"
         else:
             name_part = "export"
         if app.export_prepend_date_var.get():
