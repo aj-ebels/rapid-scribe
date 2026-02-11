@@ -1175,12 +1175,35 @@ def main():
         finally:
             app._loading_meeting = False
 
+    def _sidebar_display_name_and_date(m):
+        """Return (display_name, date_str) for a meeting for the sidebar."""
+        name = (m.get("meeting_name") or "New Meeting").strip()
+        if len(name) > 28:
+            name = name[:25] + "..."
+        updated_str = _format_iso_date(m.get("updated_at"))
+        date_str = f"Updated {updated_str}" if updated_str else ""
+        return name, date_str
+
+    def _update_sidebar_selection_highlight():
+        """Update only the selection border on sidebar rows (no rebuild)."""
+        cache = getattr(app, "_sidebar_row_cache", None)
+        if not cache:
+            return
+        # Use frame bg for non-current so border is invisible when width=0
+        no_border_color = COLORS["prompt_item_bg"]
+        for mid, data in cache.items():
+            is_current = mid == app.current_meeting_id
+            data["row"].configure(
+                border_width=2 if is_current else 0,
+                border_color=COLORS["primary_fg"] if is_current else no_border_color,
+            )
+
     def _select_meeting(meeting_id):
         _do_save_meeting()
         m = get_meeting_by_id(app.meetings, meeting_id)
         if m:
             load_meeting_to_ui(m)
-        app.refresh_sidebar_meetings_list()
+        _update_sidebar_selection_highlight()
 
     def _new_meeting():
         _do_save_meeting()
@@ -1204,16 +1227,28 @@ def main():
             load_meeting_to_ui(next_m)
         app.refresh_sidebar_meetings_list()
 
-    def refresh_sidebar_meetings_list():
+    def refresh_sidebar_meetings_list(force_full=False):
+        current_ids = [m.get("id") for m in app.meetings]
+        cache = getattr(app, "_sidebar_row_cache", None)
+        last_ids = getattr(app, "_sidebar_last_ids", [])
+        # In-place update when list unchanged (e.g. after auto-save or selection change)
+        if not force_full and cache is not None and last_ids == current_ids:
+            for mid, data in cache.items():
+                m = get_meeting_by_id(app.meetings, mid)
+                if m:
+                    name, date_str = _sidebar_display_name_and_date(m)
+                    data["name_lbl"].configure(text=name)
+                    data["date_lbl"].configure(text=date_str)
+            _update_sidebar_selection_highlight()
+            return
+        # Full rebuild when list changed or first load
         for w in app.meetings_scroll.winfo_children():
             w.destroy()
-        # List already sorted by updated_at desc from load_meetings / after save
+        app._sidebar_row_cache = {}
+        app._sidebar_last_ids = current_ids
         for m in app.meetings:
             mid = m.get("id")
-            name = (m.get("meeting_name") or "New Meeting").strip()
-            if len(name) > 28:
-                name = name[:25] + "..."
-            updated_str = _format_iso_date(m.get("updated_at"))
+            name, date_str = _sidebar_display_name_and_date(m)
             row = ctk.CTkFrame(app.meetings_scroll, fg_color=COLORS["prompt_item_bg"], corner_radius=6, cursor="hand2")
             row.pack(fill="x", pady=2)
             row.grid_columnconfigure(0, weight=1, minsize=0)
@@ -1225,7 +1260,7 @@ def main():
                 row.configure(border_width=2, border_color=COLORS["primary_fg"])
             lbl = ctk.CTkLabel(row, text=name, font=ctk.CTkFont(family=UI_FONT_FAMILY, size=F.small), anchor="w")
             lbl.grid(row=0, column=0, sticky="ew", padx=(UI_PAD, 4), pady=(4, 0))
-            date_lbl = ctk.CTkLabel(row, text=f"Updated {updated_str}" if updated_str else "", font=ctk.CTkFont(family=UI_FONT_FAMILY, size=F.tiny), anchor="w", text_color="gray")
+            date_lbl = ctk.CTkLabel(row, text=date_str, font=ctk.CTkFont(family=UI_FONT_FAMILY, size=F.tiny), anchor="w", text_color="gray")
             date_lbl.grid(row=1, column=0, sticky="ew", padx=(UI_PAD, 4), pady=(0, 4))
             del_btn = ctk.CTkButton(row, text="\u2715", width=28, height=28, font=ctk.CTkFont(size=F.tiny), corner_radius=4, fg_color=COLORS["danger_fg"], hover_color=COLORS["danger_hover"])
             del_btn.grid(row=0, column=1, rowspan=2, padx=(0, 4), pady=4)
@@ -1233,7 +1268,9 @@ def main():
             row.bind("<Button-1>", lambda e, mid=mid: _select_meeting(mid))
             lbl.bind("<Button-1>", lambda e, mid=mid: _select_meeting(mid))
             date_lbl.bind("<Button-1>", lambda e, mid=mid: _select_meeting(mid))
+            app._sidebar_row_cache[mid] = {"row": row, "name_lbl": lbl, "date_lbl": date_lbl}
         app.new_meeting_btn.configure(command=_new_meeting)
+        _update_sidebar_selection_highlight()
         if getattr(app, "_update_sidebar_scrollbar_visibility", None) is not None:
             root.after_idle(app._update_sidebar_scrollbar_visibility)
 
