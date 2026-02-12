@@ -1069,6 +1069,54 @@ def main():
     app.summary_text.bind("<KeyRelease>", lambda e: app._update_generate_name_btn_state())
     app._update_generate_name_btn_state()
 
+    def _open_find_dialog(textbox):
+        txt = getattr(textbox, "_textbox", None)
+        if not txt:
+            return
+        # Use a custom tag so the highlight is visible while the dialog has focus (sel is not drawn when widget loses focus)
+        txt.tag_configure("find_highlight", background="#2563eb", foreground="white")
+
+        def clear_highlight():
+            txt.tag_remove("find_highlight", "1.0", "end")
+
+        d = ctk.CTkToplevel(root)
+        d.title("Find")
+        d.transient(root)
+        d.geometry("320x90")
+        entry = ctk.CTkEntry(d, width=280, placeholder_text="Search…", font=ctk.CTkFont(family=UI_FONT_FAMILY, size=F.small))
+        entry.pack(padx=12, pady=(12, 6), fill="x")
+        d.after(50, entry.focus_set)  # focus after dialog is shown so search field is ready for typing
+
+        def find_next():
+            s = entry.get().strip()
+            if not s:
+                return
+            clear_highlight()
+            start = txt.index("insert")
+            end_idx = txt.index("end")
+            pos = txt.search(s, start, end_idx, nocase=1)
+            if not pos:
+                pos = txt.search(s, "1.0", start, nocase=1)
+            if pos:
+                end = pos + f"+{len(s)}c"
+                txt.tag_add("find_highlight", pos, end)
+                txt.see(pos)
+                txt.mark_set("insert", end)
+            else:
+                messagebox.showinfo("Find", "No more matches.", parent=d)
+
+        def close_dialog():
+            clear_highlight()
+            d.destroy()
+
+        ctk.CTkButton(d, text="Find next", width=90, font=ctk.CTkFont(family=UI_FONT_FAMILY, size=F.small), command=find_next).pack(pady=(0, 12))
+        entry.bind("<Return>", lambda e: find_next())
+        entry.bind("<Escape>", lambda e: close_dialog())
+        d.protocol("WM_DELETE_WINDOW", close_dialog)
+
+    for _tb in (app.manual_notes, app.log, app.summary_text):
+        _tb.bind("<Control-f>", lambda e, w=_tb: _open_find_dialog(w))
+
     export_row = ctk.CTkFrame(tab_transcript, fg_color="transparent")
     export_row.pack(fill="x", pady=(UI_PAD, UI_PAD_LG), padx=UI_PAD_LG)
     app.export_prepend_date_var = ctk.BooleanVar(value=app.settings.get("export_prepend_date", True))
