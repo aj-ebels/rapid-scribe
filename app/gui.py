@@ -32,6 +32,7 @@ from .transcription import (
     uninstall_transcription_model,
     download_transcription_model,
     start_transcription_subprocess,
+    run_startup_check_worker,
 )
 from .capture import (
     capture_worker,
@@ -137,18 +138,18 @@ def _is_transcription_model_installed(app):
     return STANDARD_TRANSCRIPTION_MODEL in repo_ids
 
 
-def _on_model_load_done(app):
-    """Called from main thread after background model load finishes."""
-    app._model_load_in_progress = False
-    update_model_status(app)
 
 
-def update_model_status(app):
-    """Update status bar, Start button, and model status label. Installed + loaded = ready to record."""
-    installed = _is_transcription_model_installed(app)
-    current_model = STANDARD_TRANSCRIPTION_MODEL
-    loaded = installed and is_transcription_model_loaded(current_model)
-    ready = installed and loaded
+def update_model_status(app, models_err=None):
+    """Update status bar, Start button, and model status label. Installed = ready (model loads in transcription subprocess when you press Start).
+    When models_err is (models, err) from a background check, use it to avoid calling list_installed_transcription_models() on the main thread."""
+    if models_err is not None:
+        models, _err = models_err
+        installed = bool(models) and STANDARD_TRANSCRIPTION_MODEL in [m["repo_id"] for m in models]
+    else:
+        installed = _is_transcription_model_installed(app)
+    # Don't pre-load the model in the main process (avoids GIL freeze). Transcription subprocess loads it when you press Start.
+    ready = installed
 
     if getattr(app, "model_status_var", None) is not None:
         if not installed:
@@ -158,18 +159,6 @@ def update_model_status(app):
                     app.model_status_label.configure(text_color=getattr(app, "model_status_warning_color", "#f7768e"))
                 except Exception:
                     pass
-        elif not loaded:
-            app.model_status_var.set("Transcription model: Loading…")
-            if getattr(app, "model_status_label", None) is not None:
-                app.model_status_label.configure(text_color="gray")
-            if not getattr(app, "_model_load_in_progress", False):
-                app._model_load_in_progress = True
-                def do_load():
-                    try:
-                        get_transcription_model(current_model)
-                    finally:
-                        app.root.after(0, lambda: _on_model_load_done(app))
-                threading.Thread(target=do_load, daemon=True).start()
         else:
             app.model_status_var.set("Transcription model: Ready — you can start recording.")
             if getattr(app, "model_status_label", None) is not None:
@@ -177,8 +166,6 @@ def update_model_status(app):
     if getattr(app, "status_var", None) is not None:
         if not installed:
             app.status_var.set("Install the transcription model first (Model tab → Download & install)")
-        elif not loaded:
-            app.status_var.set("Loading transcription model…")
         else:
             app.status_var.set("Ready to record & transcribe")
     if getattr(app, "start_btn", None) is not None:
@@ -555,12 +542,19 @@ def main():
         if not getattr(app, "_summary_generating", False):
             _clear_summary_pulse(app)
             return
-        phase = getattr(app, "_summary_pulse_phase", 0.0)
-        try:
-            app.summary_text.configure(border_width=PULSE_BORDER_WIDTH, border_color=_pulse_color(phase, _pulse_rgb_blue_dim, _pulse_rgb_blue_bright))
-        except Exception:
-            pass
-        app._summary_pulse_phase = phase + (2 * math.pi * PULSE_TICK_MS / 1000.0 / PULSE_CYCLE_SEC)
+        # Only show blue outline for the meeting that triggered the request (not the one currently selected if user switched)
+        if app.current_meeting_id != getattr(app, "_summary_for_meeting_id", None):
+            try:
+                app.summary_text.configure(border_width=0)
+            except Exception:
+                pass
+        else:
+            phase = getattr(app, "_summary_pulse_phase", 0.0)
+            try:
+                app.summary_text.configure(border_width=PULSE_BORDER_WIDTH, border_color=_pulse_color(phase, _pulse_rgb_blue_dim, _pulse_rgb_blue_bright))
+            except Exception:
+                pass
+            app._summary_pulse_phase = phase + (2 * math.pi * PULSE_TICK_MS / 1000.0 / PULSE_CYCLE_SEC)
         app._summary_pulse_id = app.root.after(PULSE_TICK_MS, lambda: _tick_summary_pulse(app))
 
     def _start_summary_pulse(app):
@@ -721,7 +715,7 @@ def main():
     header = ctk.CTkFrame(main_content, fg_color=COLORS["header"], corner_radius=UI_RADIUS, height=_header_height)
     header.pack(fill="x", pady=(0, UI_PAD))
     header.pack_propagate(False)
-    app.status_var = ctk.StringVar(value="Loading transcription model…")
+    app.status_var = ctk.StringVar(value="Checking…")
     ctk.CTkLabel(header, textvariable=app.status_var, font=ctk.CTkFont(family=UI_FONT_FAMILY, size=F.header, weight="bold")).pack(side="left", padx=UI_PAD_LG, pady=UI_PAD)
     app.model_status_var = ctk.StringVar(value="")
     # Live input volume indicator (small bar, right of status)
@@ -839,21 +833,35 @@ def main():
             installed_card.pack_forget()
             install_card.pack(fill="x", padx=UI_PAD_LG, pady=(UI_PAD, UI_PAD_LG))
             app.install_model_btn.configure(state="normal")
-        update_model_status(app)
+        update_model_status(app, models_err=(models, err))
 
     def _startup_check_done(models_err):
         """Called on main thread after background startup check; refreshes Model tab and enables Record when ready."""
         refresh_models_tab(models_err=models_err)
 
-    def _run_startup_check():
-        """Run in background: scan cache then schedule UI update on main thread so app stays responsive."""
-        models_err = list_installed_transcription_models()
-        app.root.after(0, lambda: _startup_check_done(models_err))
+    def _poll_startup_queue():
+        """Poll for startup check result from subprocess (avoids GIL contention; main thread stays responsive)."""
+        try:
+            models_err = app._startup_queue.get_nowait()
+            if app._startup_process is not None and app._startup_process.is_alive():
+                app._startup_process.terminate()
+                app._startup_process.join(timeout=2)
+            app._startup_process = None
+            _startup_check_done(models_err)
+        except queue.Empty:
+            app.root.after(50, _poll_startup_queue)
 
-    # Defer model check to background so the window appears immediately and stays responsive.
-    # Record button stays disabled until update_model_status() runs (after check and optional model load).
-    app.model_status_var.set("Transcription model: Loading…")
-    threading.Thread(target=_run_startup_check, daemon=True).start()
+    # Run cache scan in a subprocess so the main process never blocks on it (no GIL contention).
+    # Main thread polls the result queue with root.after(); Record button stays disabled until we get the result.
+    app.model_status_var.set("Transcription model: Checking…")
+    app._startup_queue = multiprocessing.Queue()
+    app._startup_process = multiprocessing.Process(
+        target=run_startup_check_worker,
+        args=(app._startup_queue,),
+        daemon=True,
+    )
+    app._startup_process.start()
+    app.root.after(50, _poll_startup_queue)
 
     # Transcript tab — meeting name and dates at top, then three equal-width columns: Manual Notes | Transcript | AI Summary
     meeting_name_row = ctk.CTkFrame(tab_transcript, fg_color="transparent")
@@ -998,6 +1006,8 @@ def main():
             messagebox.showwarning("Empty transcript", "Transcript is empty. Record or paste some text first.", parent=root)
             return
         manual_notes = app.manual_notes.get("1.0", "end").strip()
+        target_meeting_id = app.current_meeting_id
+        app._summary_for_meeting_id = target_meeting_id
         app.summary_generate_btn.configure(state="disabled")
         app.summary_status_var.set("Generating…")
         app._summary_generating = True
@@ -1016,10 +1026,16 @@ def main():
             app.summary_generate_btn.configure(state="normal")
             app.summary_status_var.set("")
             if ok:
-                app.summary_text.delete("1.0", "end")
-                app.summary_text.insert("1.0", out)
-                app._update_generate_name_btn_state()
-                app.schedule_save_meeting()
+                meeting = get_meeting_by_id(app.meetings, target_meeting_id)
+                if meeting:
+                    update_meeting_fields(meeting, ai_summary=out)
+                    app.meetings.sort(key=lambda m: m.get("updated_at") or m.get("created_at") or "", reverse=True)
+                    save_meetings(app.meetings)
+                if app.current_meeting_id == target_meeting_id:
+                    app.summary_text.delete("1.0", "end")
+                    app.summary_text.insert("1.0", out)
+                    app._update_generate_name_btn_state()
+                app.refresh_sidebar_meetings_list()
             else:
                 messagebox.showerror("AI Summary failed", out, parent=root)
         threading.Thread(target=worker, daemon=True).start()

@@ -111,6 +111,15 @@ def download_transcription_model(model_id):
         return False, str(e)
 
 
+def run_startup_check_worker(result_queue):
+    """Run in a subprocess to avoid GIL contention with the GUI. Puts (models, err) on result_queue."""
+    try:
+        result = list_installed_transcription_models()
+        result_queue.put(result)
+    except Exception as e:
+        result_queue.put(([], str(e)))
+
+
 def list_installed_transcription_models():
     """List cached Hugging Face models that look like ASR/transcription. Returns (list, error)."""
     try:

@@ -10,12 +10,12 @@
 [Setup]
 AppId={{B8E92A1C-5D4F-4E2A-9C3B-1D7E8F0A2B3C}
 AppName={#AppName}
-AppVersion=2.6
+AppVersion=2.7
 AppPublisher=Blue Bridge Solutions
 DefaultDirName={autopf}\Blue Bridge Meeting Companion
 DefaultGroupName=Blue Bridge Meeting Companion
 OutputDir=installer_output
-OutputBaseFilename=Blue Bridge Meeting Companion v2.6-Setup
+OutputBaseFilename=Blue Bridge Meeting Companion v2.7-Setup
 Compression=lzma2
 SolidCompression=yes
 SetupIconFile=icon.ico
