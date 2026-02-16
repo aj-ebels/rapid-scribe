@@ -44,7 +44,7 @@ from .capture import (
     MIXER_GAIN_MEETING,
     SAMPLE_RATE,
 )
-from .ai_summary import generate_ai_summary, generate_export_name
+from .ai_summary import generate_ai_summary, generate_export_name, ask_meeting_ai
 from .api_key_storage import get_openai_api_key, set_openai_api_key, clear_openai_api_key
 from .diagnostic import write as diag
 from .meetings_storage import (
@@ -55,6 +55,9 @@ from .meetings_storage import (
     update_meeting_fields,
     delete_meeting_by_id,
     ensure_at_least_one_meeting,
+    ensure_meeting_has_ai_chat_messages,
+    append_ai_chat_message,
+    clear_ai_chat_messages,
 )
 
 if sys.platform == "win32":
@@ -910,9 +913,12 @@ def main():
     meeting_dates_lbl = ctk.CTkLabel(meeting_name_row, textvariable=app.meeting_dates_var, font=ctk.CTkFont(family=UI_FONT_FAMILY, size=F.tiny), text_color="gray", anchor="w")
     meeting_dates_lbl.grid(row=1, column=0, sticky="w", padx=0, pady=(0, 4))
 
+    column_toggle_row = ctk.CTkFrame(tab_transcript, fg_color="transparent")
+    column_toggle_row.pack(fill="x", padx=UI_PAD_LG, pady=(UI_PAD, 4))
+
     card = ctk.CTkFrame(tab_transcript, fg_color="transparent")
     card.pack(fill="both", expand=True)
-    for col in (0, 1, 2):
+    for col in (0, 1, 2, 3):
         card.grid_columnconfigure(col, weight=1, uniform="transcript_cols")
     card.grid_rowconfigure(0, weight=0)
     card.grid_rowconfigure(1, weight=0)
@@ -925,6 +931,10 @@ def main():
     notes_header = ctk.CTkFrame(card, fg_color="transparent")
     notes_header.grid(row=0, column=0, sticky="ew", padx=(UI_PAD_LG, UI_PAD))
     ctk.CTkLabel(notes_header, text="Manual Notes", font=ctk.CTkFont(family=UI_FONT_FAMILY, size=F.header, weight="bold")).pack(side="left")
+    def clear_manual_notes():
+        if messagebox.askyesno("Clear manual notes", "Clear all manual notes? This cannot be undone.", parent=root):
+            app.manual_notes.delete("1.0", "end")
+    ctk.CTkButton(notes_header, text="Clear", font=ctk.CTkFont(family=UI_FONT_FAMILY, size=F.small), width=50, height=28, corner_radius=UI_RADIUS, fg_color=COLORS["secondary_fg"], hover_color=COLORS["secondary_hover"], command=clear_manual_notes).pack(side="right", padx=UI_PAD, pady=4)
     notes_sub = ctk.CTkFrame(card, fg_color="transparent")
     notes_sub.grid(row=1, column=0, sticky="ew", padx=(UI_PAD_LG, UI_PAD), pady=(0, PAD_BELOW_SUBHEADER))
     ctk.CTkLabel(notes_sub, text="Notes will be included in the AI summary.", font=ctk.CTkFont(family=UI_FONT_FAMILY, size=F.tiny), text_color="gray", wraplength=400, anchor="w").pack(anchor="w")
@@ -942,7 +952,8 @@ def main():
             root.clipboard_append(text)
             root.update()
     def clear_transcript():
-        app.log.delete("1.0", "end")
+        if messagebox.askyesno("Clear transcript", "Clear the entire transcript? This cannot be undone.", parent=root):
+            app.log.delete("1.0", "end")
     ctk.CTkButton(card_header, text="Copy transcript", font=ctk.CTkFont(family=UI_FONT_FAMILY, size=F.small), width=100, height=28, corner_radius=UI_RADIUS, fg_color=COLORS["secondary_fg"], hover_color=COLORS["secondary_hover"], command=copy_transcript).pack(side="left", padx=(UI_PAD, 0), pady=4)
     ctk.CTkButton(card_header, text="Clear", font=ctk.CTkFont(family=UI_FONT_FAMILY, size=F.small), width=50, height=28, corner_radius=UI_RADIUS, fg_color=COLORS["secondary_fg"], hover_color=COLORS["secondary_hover"], command=clear_transcript).pack(side="right", padx=UI_PAD, pady=4)
     transcript_sub = ctk.CTkFrame(card, fg_color="transparent")
@@ -961,7 +972,7 @@ def main():
     app.summary_prompt_menu = ctk.CTkOptionMenu(summary_header, values=_prompt_names, variable=app.summary_prompt_var, width=150, font=ctk.CTkFont(family=UI_FONT_FAMILY, size=F.small))
     app.summary_prompt_menu.pack(side="left", padx=(UI_PAD, 0), pady=4)
     app.summary_status_var = ctk.StringVar(value="")
-    ctk.CTkLabel(summary_header, textvariable=app.summary_status_var, font=ctk.CTkFont(family=UI_FONT_FAMILY, size=F.small), text_color="gray").pack(side="left", padx=(UI_PAD, 0), pady=4)
+    app.summary_status_lbl = ctk.CTkLabel(summary_header, textvariable=app.summary_status_var, font=ctk.CTkFont(family=UI_FONT_FAMILY, size=F.small), text_color="gray")
 
     app.auto_generate_summary_when_stopping_var = ctk.BooleanVar(value=app.settings.get("auto_generate_summary_when_stopping", False))
     def _on_auto_summary_when_stopping_changed():
@@ -1009,7 +1020,6 @@ def main():
         target_meeting_id = app.current_meeting_id
         app._summary_for_meeting_id = target_meeting_id
         app.summary_generate_btn.configure(state="disabled")
-        app.summary_status_var.set("Generating…")
         app._summary_generating = True
         _start_summary_pulse(app)
         result_holder = []
@@ -1042,8 +1052,9 @@ def main():
         root.after(200, check_done)
 
     app._do_ai_summary = _do_ai_summary
-    app.summary_generate_btn = ctk.CTkButton(summary_header, text="Generate", font=ctk.CTkFont(family=UI_FONT_FAMILY, size=F.small), width=74, height=28, corner_radius=UI_RADIUS, fg_color=COLORS["primary_fg"], hover_color=COLORS["primary_hover"], command=_do_ai_summary)
-    app.summary_generate_btn.pack(side="left", padx=(UI_PAD, 0), pady=4)
+    app.summary_generate_btn = ctk.CTkButton(summary_header, text="\u27f3", font=ctk.CTkFont(family=UI_FONT_FAMILY, size=F.body), width=40, height=28, corner_radius=UI_RADIUS, fg_color=COLORS["primary_fg"], hover_color=COLORS["primary_hover"], command=_do_ai_summary)
+    app.summary_generate_btn.pack(side="left", padx=(4, 0), pady=4)
+    app.summary_status_lbl.pack(side="left", padx=(UI_PAD, 0), pady=4)
 
     def _export_markdown():
         summary = app.summary_text.get("1.0", "end").strip()
@@ -1081,9 +1092,186 @@ def main():
             messagebox.showerror("Export failed", str(e), parent=root)
 
     app.summary_text = ctk.CTkTextbox(card, wrap="word", font=ctk.CTkFont(family=MONO_FONT_FAMILY, size=F.body), corner_radius=8, border_width=0, fg_color=COLORS["textbox_bg"], border_spacing=UI_PAD)
-    app.summary_text.grid(row=2, column=2, sticky="nsew", padx=(UI_PAD, UI_PAD_LG), pady=(0, UI_PAD))
-    app.summary_text.bind("<KeyRelease>", lambda e: app._update_generate_name_btn_state())
+    app.summary_text.grid(row=2, column=2, sticky="nsew", padx=(UI_PAD, UI_PAD), pady=(0, UI_PAD))
+
+    # Ask AI (4th column) — one chat thread per meeting; user can clear with confirmation
+    ask_ai_header = ctk.CTkFrame(card, fg_color="transparent")
+    ask_ai_header.grid(row=0, column=3, sticky="ew", padx=(UI_PAD, UI_PAD_LG))
+    ctk.CTkLabel(ask_ai_header, text="Ask AI", font=ctk.CTkFont(family=UI_FONT_FAMILY, size=F.header, weight="bold")).pack(side="left")
+    ctk.CTkButton(ask_ai_header, text="Clear", font=ctk.CTkFont(family=UI_FONT_FAMILY, size=F.small), width=50, height=28, corner_radius=UI_RADIUS, fg_color=COLORS["secondary_fg"], hover_color=COLORS["secondary_hover"], command=lambda: _ask_ai_clear_chat(app)).pack(side="right", padx=UI_PAD, pady=4)
+    app.ask_ai_hint_var = ctk.StringVar(value="Ask questions about this meeting.")
+    ask_ai_hint_lbl = ctk.CTkLabel(card, textvariable=app.ask_ai_hint_var, font=ctk.CTkFont(family=UI_FONT_FAMILY, size=F.tiny), text_color="gray", wraplength=280, anchor="w")
+    ask_ai_hint_lbl.grid(row=1, column=3, sticky="w", padx=(UI_PAD, UI_PAD_LG), pady=(0, PAD_BELOW_SUBHEADER))
+    ask_ai_content = ctk.CTkFrame(card, fg_color="transparent")
+    ask_ai_content.grid(row=2, column=3, sticky="nsew", padx=(UI_PAD, UI_PAD_LG), pady=(0, UI_PAD))
+    ask_ai_content.grid_rowconfigure(0, weight=1)
+    ask_ai_content.grid_rowconfigure(1, weight=0)
+    ask_ai_content.grid_columnconfigure(0, weight=1)
+    app.ask_ai_messages_scroll = ctk.CTkScrollableFrame(ask_ai_content, fg_color=COLORS["textbox_bg"], corner_radius=8, border_width=0)
+    app.ask_ai_messages_scroll.grid(row=0, column=0, sticky="nsew")
+    app.ask_ai_messages_scroll.grid_columnconfigure(0, weight=1)
+    ask_ai_input_row = ctk.CTkFrame(ask_ai_content, fg_color="transparent")
+    ask_ai_input_row.grid(row=1, column=0, sticky="ew", pady=(UI_PAD, 0))
+    ask_ai_input_row.grid_columnconfigure(0, weight=1)
+    app.ask_ai_input = ctk.CTkTextbox(ask_ai_input_row, wrap="word", font=ctk.CTkFont(family=UI_FONT_FAMILY, size=F.small), height=56, corner_radius=8, border_width=0, fg_color=COLORS["textbox_bg"])
+    app.ask_ai_input.pack(side="left", fill="x", expand=True, padx=(0, UI_PAD))
+    app.ask_ai_send_btn = ctk.CTkButton(ask_ai_input_row, text="\u27a4", font=ctk.CTkFont(family=UI_FONT_FAMILY, size=F.body), width=40, height=32, corner_radius=UI_RADIUS, fg_color=COLORS["primary_fg"], hover_color=COLORS["primary_hover"], command=lambda: _ask_ai_send(app))
+    app.ask_ai_send_btn.pack(side="right")
+
+    def _ask_ai_meeting_has_content():
+        notes = (app.manual_notes.get("1.0", "end") or "").strip()
+        transcript = (app.log.get("1.0", "end") or "").strip()
+        summary = (app.summary_text.get("1.0", "end") or "").strip()
+        return bool(notes or transcript or summary)
+
+    def _ask_ai_input_has_text():
+        return bool((app.ask_ai_input.get("1.0", "end") or "").strip())
+
+    def _ask_ai_update_send_state():
+        has_meeting_content = _ask_ai_meeting_has_content()
+        has_input_text = _ask_ai_input_has_text()
+        app.ask_ai_send_btn.configure(state="normal" if (has_meeting_content and has_input_text) else "disabled")
+        app.ask_ai_hint_var.set("Ask questions about this meeting." if has_meeting_content else "Add transcript, notes, or summary to use Ask AI.")
+
+    def _ask_ai_show_messages(messages):
+        for w in app.ask_ai_messages_scroll.winfo_children():
+            w.destroy()
+        for m in messages or []:
+            role = m.get("role") or "user"
+            content = (m.get("content") or "").strip()
+            if not content:
+                continue
+            wrap_len = 320
+            frame = ctk.CTkFrame(app.ask_ai_messages_scroll, fg_color=COLORS["prompt_item_bg"] if role == "assistant" else ("gray85", "gray28"), corner_radius=8, border_width=0)
+            frame.pack(fill="x", pady=4)
+            frame.grid_columnconfigure(0, weight=1)
+            lbl = ctk.CTkLabel(frame, text=content, font=ctk.CTkFont(family=UI_FONT_FAMILY, size=F.small), anchor="w", justify="left", wraplength=wrap_len)
+            lbl.pack(anchor="w", padx=10, pady=8, fill="x")
+
+    def _ask_ai_clear_chat(app):
+        meeting = get_meeting_by_id(app.meetings, app.current_meeting_id) if app.current_meeting_id else None
+        if not meeting:
+            return
+        if not messagebox.askyesno("Clear chat", "Clear all messages in this chat? This cannot be undone.", parent=root):
+            return
+        clear_ai_chat_messages(meeting)
+        save_meetings(app.meetings)
+        _ask_ai_show_messages([])
+        app._ask_ai_update_send_state()
+
+    def _ask_ai_send(app):
+        api_key = get_openai_api_key()
+        if not api_key:
+            messagebox.showerror("API key required", "Add your OpenAI API key in Settings.", parent=root)
+            return
+        if not _ask_ai_meeting_has_content():
+            messagebox.showwarning("No content", "Add transcript, notes, or summary to use Ask AI.", parent=root)
+            return
+        user_text = (app.ask_ai_input.get("1.0", "end") or "").strip()
+        if not user_text:
+            return
+        meeting = get_meeting_by_id(app.meetings, app.current_meeting_id) if app.current_meeting_id else None
+        if not meeting:
+            return
+        ensure_meeting_has_ai_chat_messages(meeting)
+        app.ask_ai_input.delete("1.0", "end")
+        append_ai_chat_message(meeting, "user", user_text)
+        save_meetings(app.meetings)
+        messages_so_far = list(meeting["ai_chat_messages"])
+        _ask_ai_show_messages(messages_so_far)
+        app.ask_ai_send_btn.configure(state="disabled")
+        result_holder = []
+        history_for_api = [{"role": m.get("role"), "content": m.get("content")} for m in messages_so_far[:-1]]
+        manual_notes_text = app.manual_notes.get("1.0", "end").strip()
+        transcript_text = app.log.get("1.0", "end").strip()
+        summary_text_content = app.summary_text.get("1.0", "end").strip()
+        def worker():
+            ok, out = ask_meeting_ai(
+                api_key,
+                manual_notes_text,
+                transcript_text,
+                summary_text_content,
+                history_for_api,
+                user_text,
+            )
+            result_holder.append((ok, out))
+        def check_done():
+            if not result_holder:
+                root.after(200, check_done)
+                return
+            ok, out = result_holder[0]
+            app.ask_ai_send_btn.configure(state="normal" if (_ask_ai_meeting_has_content() and _ask_ai_input_has_text()) else "disabled")
+            if ok:
+                append_ai_chat_message(meeting, "assistant", out)
+                save_meetings(app.meetings)
+                _ask_ai_show_messages(meeting["ai_chat_messages"])
+            else:
+                messagebox.showerror("Ask AI failed", out, parent=root)
+        threading.Thread(target=worker, daemon=True).start()
+        root.after(200, check_done)
+
+    app._ask_ai_show_messages = _ask_ai_show_messages
+    app._ask_ai_update_send_state = _ask_ai_update_send_state
     app._update_generate_name_btn_state()
+    _ask_ai_update_send_state()
+
+    app.ask_ai_input.bind("<KeyRelease>", lambda e: app._ask_ai_update_send_state())
+
+    def _ask_ai_on_return(event):
+        if _ask_ai_meeting_has_content() and _ask_ai_input_has_text():
+            _ask_ai_send(app)
+            return "break"
+        return None
+    app.ask_ai_input.bind("<Return>", _ask_ai_on_return)
+
+    # Column visibility toggles: list of (widget, grid_kwargs) per column
+    app._transcript_column_widgets = [
+        [(notes_header, {"row": 0, "column": 0, "sticky": "ew", "padx": (UI_PAD_LG, UI_PAD)}), (notes_sub, {"row": 1, "column": 0, "sticky": "ew", "padx": (UI_PAD_LG, UI_PAD), "pady": (0, PAD_BELOW_SUBHEADER)}), (app.manual_notes, {"row": 2, "column": 0, "sticky": "nsew", "padx": (UI_PAD_LG, UI_PAD), "pady": (0, UI_PAD)})],
+        [(card_header, {"row": 0, "column": 1, "sticky": "ew", "padx": UI_PAD}), (transcript_sub, {"row": 1, "column": 1, "sticky": "ew", "padx": UI_PAD, "pady": (0, PAD_BELOW_SUBHEADER)}), (app.log, {"row": 2, "column": 1, "sticky": "nsew", "padx": UI_PAD, "pady": (0, UI_PAD)})],
+        [(summary_header, {"row": 0, "column": 2, "sticky": "ew", "padx": (UI_PAD, UI_PAD_LG)}), (summary_options_row, {"row": 1, "column": 2, "sticky": "ew", "padx": (UI_PAD, UI_PAD_LG), "pady": (0, PAD_BELOW_AUTO_CHECKBOX)}), (app.summary_text, {"row": 2, "column": 2, "sticky": "nsew", "padx": (UI_PAD, UI_PAD), "pady": (0, UI_PAD)})],
+        [(ask_ai_header, {"row": 0, "column": 3, "sticky": "ew", "padx": (UI_PAD, UI_PAD_LG)}), (ask_ai_hint_lbl, {"row": 1, "column": 3, "sticky": "w", "padx": (UI_PAD, UI_PAD_LG), "pady": (0, PAD_BELOW_SUBHEADER)}), (ask_ai_content, {"row": 2, "column": 3, "sticky": "nsew", "padx": (UI_PAD, UI_PAD_LG), "pady": (0, UI_PAD)})],
+    ]
+
+    def _apply_transcript_columns_visibility():
+        visible = app.settings.get("transcript_columns_visible", [True, True, True, True])
+        if len(visible) < 4:
+            visible = visible + [True] * (4 - len(visible))
+        for col in range(4):
+            is_visible = bool(visible[col])
+            if is_visible:
+                card.grid_columnconfigure(col, weight=1, minsize=0, uniform="transcript_cols")
+            else:
+                card.grid_columnconfigure(col, weight=0, minsize=0, uniform=f"_hidden_{col}")
+            for widget, kwargs in app._transcript_column_widgets[col]:
+                if is_visible:
+                    widget.grid(**kwargs)
+                else:
+                    widget.grid_remove()
+        card.update_idletasks()
+
+    def _on_column_toggle(col):
+        visible = list(app.settings.get("transcript_columns_visible", [True, True, True, True]))
+        if len(visible) < 4:
+            visible = visible + [True] * (4 - len(visible))
+        new_val = not visible[col]
+        if not new_val and sum(visible) <= 1:
+            app._column_toggle_vars[col].set(True)
+            return
+        visible[col] = new_val
+        app.settings["transcript_columns_visible"] = visible
+        save_settings(app.settings)
+        _apply_transcript_columns_visibility()
+
+    app._column_toggle_vars = []
+    col_labels = ["Notes", "Transcript", "Summary", "Ask AI"]
+    for col in range(4):
+        vis = app.settings.get("transcript_columns_visible", [True, True, True, True])
+        on = vis[col] if col < len(vis) else True
+        var = ctk.BooleanVar(value=on)
+        app._column_toggle_vars.append(var)
+        sw = ctk.CTkSwitch(column_toggle_row, text=col_labels[col], variable=var, font=ctk.CTkFont(family=UI_FONT_FAMILY, size=F.small), command=lambda c=col: _on_column_toggle(c))
+        sw.pack(side="left", padx=(0, UI_PAD_LG), pady=2)
+    _apply_transcript_columns_visibility()
 
     def _open_find_dialog(textbox):
         txt = getattr(textbox, "_textbox", None)
@@ -1236,6 +1424,9 @@ def main():
             app.summary_text.delete("1.0", "end")
             app.summary_text.insert("1.0", meeting.get("ai_summary") or "")
             app._update_generate_name_btn_state()
+            ensure_meeting_has_ai_chat_messages(meeting)
+            app._ask_ai_show_messages(meeting.get("ai_chat_messages", []))
+            app._ask_ai_update_send_state()
         finally:
             app._loading_meeting = False
 
@@ -1348,12 +1539,16 @@ def main():
 
     def _on_manual_notes_changed(event=None):
         schedule_save_meeting()
+        app._ask_ai_update_send_state()
     app.manual_notes.bind("<KeyRelease>", _on_manual_notes_changed)
     def _on_transcript_changed(event=None):
         schedule_save_meeting()
+        app._ask_ai_update_send_state()
     app.log.bind("<KeyRelease>", _on_transcript_changed)
     def _on_summary_changed(event=None):
         schedule_save_meeting()
+        app._update_generate_name_btn_state()
+        app._ask_ai_update_send_state()
     app.summary_text.bind("<KeyRelease>", _on_summary_changed)
 
     # AI Prompts tab

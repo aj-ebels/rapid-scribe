@@ -70,9 +70,32 @@ def create_meeting(meeting_name="New Meeting"):
         "manual_notes": "",
         "transcript": "",
         "ai_summary": "",
+        "ai_chat_messages": [],
         "created_at": now,
         "updated_at": now,
     }
+
+
+def ensure_meeting_has_ai_chat_messages(meeting):
+    """Ensure meeting has ai_chat_messages list. Modifies in place."""
+    if "ai_chat_messages" not in meeting or not isinstance(meeting["ai_chat_messages"], list):
+        meeting["ai_chat_messages"] = []
+
+
+def append_ai_chat_message(meeting, role, content):
+    """Append a message to the meeting's single AI chat. role is 'user' or 'assistant'. Does not persist."""
+    ensure_meeting_has_ai_chat_messages(meeting)
+    meeting["ai_chat_messages"].append({"role": role, "content": (content or "").strip()})
+    meeting["updated_at"] = _now_iso()
+    return True
+
+
+def clear_ai_chat_messages(meeting):
+    """Clear all messages in the meeting's AI chat. Does not persist."""
+    ensure_meeting_has_ai_chat_messages(meeting)
+    meeting["ai_chat_messages"].clear()
+    meeting["updated_at"] = _now_iso()
+    return True
 
 
 def get_meeting_by_id(meetings, meeting_id):
