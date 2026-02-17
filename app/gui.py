@@ -1273,6 +1273,23 @@ def main():
         sw.pack(side="left", padx=(0, UI_PAD_LG), pady=2)
     _apply_transcript_columns_visibility()
 
+    # Re-apply column visibility when the card is resized/configured (e.g. moving window to another monitor)
+    # so that hidden columns stay hidden and weights stay correct after DPI/layout changes.
+    _column_visibility_after_id = [None]  # mutable so nested function can rebind
+
+    def _on_card_configure(_event=None):
+        aid = _column_visibility_after_id[0]
+        if aid is not None:
+            root.after_cancel(aid)
+
+        def _do_apply():
+            _apply_transcript_columns_visibility()
+            _column_visibility_after_id[0] = None
+
+        _column_visibility_after_id[0] = root.after(50, _do_apply)
+
+    card.bind("<Configure>", _on_card_configure)
+
     def _open_find_dialog(textbox):
         txt = getattr(textbox, "_textbox", None)
         if not txt:
