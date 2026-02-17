@@ -12,7 +12,7 @@ from pathlib import Path
 import numpy as np
 import customtkinter as ctk
 import sounddevice as sd
-from tkinter import messagebox, filedialog, Canvas, Scrollbar
+from tkinter import messagebox, filedialog, Canvas, Scrollbar, Toplevel, Label as TkLabel
 
 try:
     from PIL import Image as PILImage
@@ -1099,6 +1099,38 @@ def main():
     ask_ai_header.grid(row=0, column=3, sticky="ew", padx=(UI_PAD, UI_PAD_LG))
     ctk.CTkLabel(ask_ai_header, text="Ask AI", font=ctk.CTkFont(family=UI_FONT_FAMILY, size=F.header, weight="bold")).pack(side="left")
     ctk.CTkButton(ask_ai_header, text="Clear", font=ctk.CTkFont(family=UI_FONT_FAMILY, size=F.small), width=50, height=28, corner_radius=UI_RADIUS, fg_color=COLORS["secondary_fg"], hover_color=COLORS["secondary_hover"], command=lambda: _ask_ai_clear_chat(app)).pack(side="right", padx=UI_PAD, pady=4)
+    ask_ai_copy_btn = ctk.CTkButton(ask_ai_header, text="\U0001f4cb", font=ctk.CTkFont(family=UI_FONT_FAMILY, size=F.small), width=36, height=28, corner_radius=UI_RADIUS, fg_color=COLORS["secondary_fg"], hover_color=COLORS["secondary_hover"], command=lambda: _ask_ai_copy_chat(app))
+    ask_ai_copy_btn.pack(side="right", pady=4)
+    _ask_ai_copy_tt = [None, None]  # [tooltip_win, after_id]
+
+    def _ask_ai_show_copy_tooltip(_e=None):
+        if _ask_ai_copy_tt[0] is not None:
+            return
+        def show():
+            if _ask_ai_copy_tt[0] is not None:
+                return
+            tw = Toplevel(root)
+            tw.overrideredirect(True)
+            tw.attributes("-topmost", True)
+            lbl = TkLabel(tw, text="Copy to clipboard", font=(UI_FONT_FAMILY, max(9, F.tiny)), bg="#2b2b2b", fg="#e0e0e0", padx=8, pady=4, relief="flat")
+            lbl.pack()
+            tw.update_idletasks()
+            bx = ask_ai_copy_btn.winfo_rootx()
+            by = ask_ai_copy_btn.winfo_rooty() + ask_ai_copy_btn.winfo_height() + 4
+            tw.geometry(f"+{bx}+{by}")
+            _ask_ai_copy_tt[0] = tw
+        _ask_ai_copy_tt[1] = root.after(400, show)
+
+    def _ask_ai_hide_copy_tooltip(_e=None):
+        if _ask_ai_copy_tt[1] is not None:
+            root.after_cancel(_ask_ai_copy_tt[1])
+            _ask_ai_copy_tt[1] = None
+        if _ask_ai_copy_tt[0] is not None:
+            _ask_ai_copy_tt[0].destroy()
+            _ask_ai_copy_tt[0] = None
+
+    ask_ai_copy_btn.bind("<Enter>", _ask_ai_show_copy_tooltip)
+    ask_ai_copy_btn.bind("<Leave>", _ask_ai_hide_copy_tooltip)
     app.ask_ai_hint_var = ctk.StringVar(value="Ask questions about this meeting.")
     ask_ai_hint_lbl = ctk.CTkLabel(card, textvariable=app.ask_ai_hint_var, font=ctk.CTkFont(family=UI_FONT_FAMILY, size=F.tiny), text_color="gray", wraplength=280, anchor="w")
     ask_ai_hint_lbl.grid(row=1, column=3, sticky="w", padx=(UI_PAD, UI_PAD_LG), pady=(0, PAD_BELOW_SUBHEADER))
@@ -1133,7 +1165,22 @@ def main():
         app.ask_ai_send_btn.configure(state="normal" if (has_meeting_content and has_input_text) else "disabled")
         app.ask_ai_hint_var.set("Ask questions about this meeting." if has_meeting_content else "Add transcript, notes, or summary to use Ask AI.")
 
+    def _ask_ai_scroll_at_bottom():
+        try:
+            canvas = app.ask_ai_messages_scroll._parent_canvas
+            top, bot = canvas.yview()
+            return bot >= 0.999
+        except (AttributeError, TypeError):
+            return True
+
+    def _ask_ai_scroll_to_bottom():
+        try:
+            app.ask_ai_messages_scroll._parent_canvas.yview_moveto(1.0)
+        except AttributeError:
+            pass
+
     def _ask_ai_show_messages(messages):
+        was_at_bottom = _ask_ai_scroll_at_bottom()
         for w in app.ask_ai_messages_scroll.winfo_children():
             w.destroy()
         for m in messages or []:
@@ -1145,8 +1192,21 @@ def main():
             frame = ctk.CTkFrame(app.ask_ai_messages_scroll, fg_color=COLORS["prompt_item_bg"] if role == "assistant" else ("gray85", "gray28"), corner_radius=8, border_width=0)
             frame.pack(fill="x", pady=4)
             frame.grid_columnconfigure(0, weight=1)
-            lbl = ctk.CTkLabel(frame, text=content, font=ctk.CTkFont(family=UI_FONT_FAMILY, size=F.small), anchor="w", justify="left", wraplength=wrap_len)
-            lbl.pack(anchor="w", padx=10, pady=8, fill="x")
+            # Who sent the message: You / AI
+            sender_label = "You" if role == "user" else "AI"
+            sender_color = ("gray50", "gray55") if role == "user" else ("gray55", "gray50")
+            ctk.CTkLabel(frame, text=sender_label, font=ctk.CTkFont(family=UI_FONT_FAMILY, size=F.tiny, weight="bold"), text_color=sender_color, anchor="w").pack(anchor="w", padx=10, pady=(8, 2))
+            # Read-only textbox so user can select and copy; same font/size as label, matches frame bg
+            msg_fg = COLORS["prompt_item_bg"] if role == "assistant" else ("gray85", "gray28")
+            lines_approx = max(1, 1 + content.count("\n") + len(content) // 45)
+            height = min(280, max(36, 22 * lines_approx))
+            txt = ctk.CTkTextbox(frame, wrap="word", font=ctk.CTkFont(family=UI_FONT_FAMILY, size=F.small), height=int(height), corner_radius=8, border_width=0, fg_color=msg_fg)
+            txt.pack(anchor="w", padx=10, pady=(0, 8), fill="x", expand=True)
+            txt.insert("1.0", content)
+            txt.configure(state="disabled")
+        if was_at_bottom:
+            root.update_idletasks()
+            root.after(10, _ask_ai_scroll_to_bottom)
 
     def _ask_ai_clear_chat(app):
         meeting = get_meeting_by_id(app.meetings, app.current_meeting_id) if app.current_meeting_id else None
@@ -1158,6 +1218,23 @@ def main():
         save_meetings(app.meetings)
         _ask_ai_show_messages([])
         app._ask_ai_update_send_state()
+
+    def _ask_ai_copy_chat(app):
+        meeting = get_meeting_by_id(app.meetings, app.current_meeting_id) if app.current_meeting_id else None
+        messages = (meeting or {}).get("ai_chat_messages") or []
+        if not messages:
+            return
+        parts = []
+        for m in messages:
+            role = (m.get("role") or "user").capitalize()
+            content = (m.get("content") or "").strip()
+            if content:
+                parts.append(f"{role}:\n{content}")
+        if not parts:
+            return
+        text = "\n\n".join(parts)
+        root.clipboard_clear()
+        root.clipboard_append(text)
 
     def _ask_ai_send(app):
         api_key = get_openai_api_key()
