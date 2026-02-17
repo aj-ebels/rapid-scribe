@@ -55,10 +55,11 @@ def get_transcription_model(model_id=None):
             _parakeet_model = None
             _parakeet_model_id = None
         import onnx_asr
-        _parakeet_model = onnx_asr.load_model(
-            model_id,
-            quantization="int8",
-        )
+        with _safe_stdout_stderr():
+            _parakeet_model = onnx_asr.load_model(
+                model_id,
+                quantization="int8",
+            )
         _parakeet_model_id = model_id
     return _parakeet_model
 

@@ -15,9 +15,9 @@
   "auto_save_delay_seconds": 1,
   "ui_scale": null,
   "transcript_columns_visible": [
-    false,
     true,
     true,
-    true
+    true,
+    false
   ]
 }
