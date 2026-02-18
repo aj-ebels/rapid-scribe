@@ -1,7 +1,7 @@
 # -*- mode: python ; coding: utf-8 -*-
-# PyInstaller spec for Blue Bridge Meeting Companion (Windows).
+# PyInstaller spec for Rapid Scribe (Windows).
 # Build: pyinstaller meetings.spec
-# Output: dist/Blue Bridge Meeting Companion/Blue Bridge Meeting Companion.exe (+ folder with dependencies and data)
+# Output: dist/Rapid Scribe/Rapid Scribe.exe (+ folder with dependencies and data)
 
 import os
 
@@ -64,7 +64,7 @@ exe = EXE(
     a.scripts,
     [],
     exclude_binaries=True,
-    name="Blue Bridge Meeting Companion",
+    name="Rapid Scribe",
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
@@ -84,5 +84,5 @@ coll = COLLECT(
     strip=False,
     upx=False,
     upx_exclude=[],
-    name="Blue Bridge Meeting Companion",
+    name="Rapid Scribe",
 )
