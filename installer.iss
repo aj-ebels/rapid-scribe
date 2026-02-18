@@ -10,12 +10,12 @@
 [Setup]
 AppId={{B8E92A1C-5D4F-4E2A-9C3B-1D7E8F0A2B3C}
 AppName={#AppName}
-AppVersion=2.10
+AppVersion=3.0
 AppPublisher=Rapid Scribe
 DefaultDirName={autopf}\Rapid Scribe
 DefaultGroupName=Rapid Scribe
 OutputDir=installer_output
-OutputBaseFilename=Rapid Scribe v2.10-Setup
+OutputBaseFilename=Rapid Scribe v3.0-Setup
 Compression=lzma2
 SolidCompression=yes
 SetupIconFile=icon.ico
