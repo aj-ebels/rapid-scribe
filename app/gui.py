@@ -575,7 +575,7 @@ def main():
         MONO_FONT_FAMILY = "Ubuntu Mono"
 
     root = ctk.CTk()
-    root.title(f"Blue Bridge Meeting Companion v{app_version}")
+    root.title(f"Rapid Scribe v{app_version}")
     _icon = _base / "icon.ico"
     if _icon.exists():
         try:

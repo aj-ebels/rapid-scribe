@@ -1,11 +1,11 @@
 # Packaging for Windows
 
-This document explains how to build the **Blue Bridge Meeting Companion** into a Windows executable and folder that you can share so others can install and run it without Python.
+This document explains how to build **Rapid Scribe** into a Windows executable and folder that you can share so others can install and run it without Python.
 
 ## What you get
 
-- **Output:** A folder `dist/Blue Bridge Meeting Companion/` containing:
-  - `Blue Bridge Meeting Companion.exe` — double-click to run
+- **Output:** A folder `dist/Rapid Scribe/` containing:
+  - `Rapid Scribe.exe` — double-click to run
   - Python runtime and dependencies (no Python install needed on the user’s PC)
   - `themes/`, `icon.ico`, and default `prompts.json`
 - **User data:** On first run, the app creates `%APPDATA%\Meetings\` for settings, prompts, and API key. The exe can live in Program Files; settings remain writable.
@@ -46,12 +46,12 @@ This document explains how to build the **Blue Bridge Meeting Companion** into a
    ```
 
 2. **Output location:**  
-   `dist\Blue Bridge Meeting Companion\`  
-   - Run `dist\Blue Bridge Meeting Companion\Blue Bridge Meeting Companion.exe` to test.
+   `dist\Rapid Scribe\`  
+   - Run `dist\Rapid Scribe\Rapid Scribe.exe` to test.
 
 3. **Share with others:**  
    - **Option A — Installer (recommended):** Build the installer (see [Installer (Inno Setup)](#installer-inno-setup) below), then share the generated setup exe. Users run it to install like any Windows app; they can uninstall via **Settings → Apps → Installed apps**.
-   - **Option B — Zip:** Zip the entire `dist\Blue Bridge Meeting Companion` folder and send it. Users unzip to a folder (e.g. `C:\Program Files\Blue Bridge Meeting Companion` or their preferred location) and run `Blue Bridge Meeting Companion.exe`. No Python or pip needed.
+   - **Option B — Zip:** Zip the entire `dist\Rapid Scribe` folder and send it. Users unzip to a folder (e.g. `C:\Program Files\Rapid Scribe` or their preferred location) and run `Rapid Scribe.exe`. No Python or pip needed.
 
 ## Installer (Inno Setup)
 
@@ -67,9 +67,9 @@ The project includes an **Inno Setup** script so you can build a normal Windows 
 3. **Build the installer:**
    - Open `installer.iss` in Inno Setup and click **Build → Compile**, or
    - From the project root: `"C:\Program Files (x86)\Inno Setup 6\ISCC.exe" installer.iss`
-   The setup exe is created in `installer_output\` (e.g. `Meetings-Setup-1.0.exe`).
+   The setup exe is created in `installer_output\` (e.g. `Rapid-Scribe-Setup-1.0.exe`).
 
-4. **Share** the setup exe. Users double-click to install, then run the app from the Start Menu or Desktop. To uninstall: **Settings → Apps → Installed apps** → **Blue Bridge Meeting Companion** → **Uninstall**.
+4. **Share** the setup exe. Users double-click to install, then run the app from the Start Menu or Desktop. To uninstall: **Settings → Apps → Installed apps** → **Rapid Scribe** → **Uninstall**.
 
 ## Diagnosing "no audio transcribed" in the built app
 
@@ -110,7 +110,7 @@ You can also run with a console to see tracebacks: in `meetings.spec` set `conso
 
 ## Single-file build (optional)
 
-The default spec builds a **directory** (`dist/Blue Bridge Meeting Companion/`) so that `icon.ico` and `prompts.json` sit next to the exe (as your code expects).  
+The default spec builds a **directory** (`dist/Rapid Scribe/`) so that `icon.ico` and `prompts.json` sit next to the exe (as your code expects).  
 If you want a **single .exe** instead:
 
 - In `meetings.spec`, replace the `EXE` + `COLLECT` block with a single `EXE(..., onefile=True)` and include all binaries/datas in that `EXE`. Then theme and data paths will use the extracted `_MEIPASS` path (already handled in the GUI). You would still ship `prompts.json` and `icon.ico` next to the exe for first-run defaults, or copy them from the bundle at runtime.

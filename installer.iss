@@ -1,21 +1,21 @@
-; Inno Setup script for Blue Bridge Meeting Companion.
+; Inno Setup script for Rapid Scribe.
 ; Prereq: Build the app first with: pyinstaller meetings.spec
 ; Then open this file in Inno Setup and Compile (or: iscc installer.iss from command line).
-; Output: installer_output\Meetings-Setup-1.0.exe (or similar)
+; Output: installer_output\Rapid-Scribe-Setup.exe (or similar)
 
-#define AppName "Blue Bridge Meeting Companion"
-#define AppExe "Blue Bridge Meeting Companion.exe"
-#define BuildOutput "dist\Blue Bridge Meeting Companion"
+#define AppName "Rapid Scribe"
+#define AppExe "Rapid Scribe.exe"
+#define BuildOutput "dist\Rapid Scribe"
 
 [Setup]
 AppId={{B8E92A1C-5D4F-4E2A-9C3B-1D7E8F0A2B3C}
 AppName={#AppName}
 AppVersion=2.10
-AppPublisher=Blue Bridge Solutions
-DefaultDirName={autopf}\Blue Bridge Meeting Companion
-DefaultGroupName=Blue Bridge Meeting Companion
+AppPublisher=Rapid Scribe
+DefaultDirName={autopf}\Rapid Scribe
+DefaultGroupName=Rapid Scribe
 OutputDir=installer_output
-OutputBaseFilename=Blue Bridge Meeting Companion v2.10-Setup
+OutputBaseFilename=Rapid Scribe v2.10-Setup
 Compression=lzma2
 SolidCompression=yes
 SetupIconFile=icon.ico
