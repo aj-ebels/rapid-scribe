@@ -27,7 +27,7 @@ On first run, open **Models**, download the default speech model (~650 MB one-ti
 
 ## Download (Windows)
 
-Pre-built installer and release notes: **[Releases](https://github.com/aj-ebels/meetings/releases)**. The app checks for updates automatically when the repo is public.
+Pre-built installer and release notes: **[Releases](https://github.com/aj-ebels/rapid-scribe/releases)**. The app checks for updates automatically when the repo is public.
 
 ## Building the installer
 

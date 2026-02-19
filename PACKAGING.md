@@ -82,9 +82,9 @@ If your repo is **public**, the app can read the latest release with no password
 1. Publish releases (tag e.g. `v3.0`) and attach the setup exe as an asset.
 2. In `app/update_check.py`, set **GITHUB_REPO** to your repo:
    ```python
-   GITHUB_REPO = "your-username/Meetings"   # use your actual GitHub username and repo name
+   GITHUB_REPO = "your-username/rapid-scribe"   # use your actual GitHub username and repo name
    ```
-   Or set the environment variable **UPDATE_CHECK_GITHUB_REPO** to `your-username/Meetings` when building or running the app (so you don’t edit code).
+   Or set the environment variable **UPDATE_CHECK_GITHUB_REPO** to `your-username/rapid-scribe` when building or running the app (so you don’t edit code).
 
 No token or password is needed for a public repo.
 
@@ -95,7 +95,7 @@ GitHub’s API does **not** allow unauthenticated access to private repos. You s
 - **Make the repo public** and use the steps above (no token).
 - **Use a public version URL:** Host a small JSON file that is publicly readable (e.g. a [public GitHub Gist](https://gist.github.com)) with:
   ```json
-  {"version": "3.0", "url": "https://github.com/your-username/Meetings/releases/latest"}
+  {"version": "3.1", "url": "https://github.com/your-username/rapid-scribe/releases/latest"}
   ```
   Set **UPDATE_CHECK_JSON_URL** (env var or in `app/update_check.py`) to that URL (for a Gist use the raw URL, e.g. `https://gist.githubusercontent.com/.../raw/.../version.json`). When you publish a new release, update the Gist’s `version` (and optionally `url`). When users click “Download”, they’re taken to the release page; for a private repo they must be logged in to GitHub with access to see and download the asset.
 

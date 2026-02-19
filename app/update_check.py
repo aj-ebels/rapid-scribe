@@ -14,7 +14,7 @@ from typing import Optional
 # For a public GitHub repo: set to "owner/repo".
 # Override with env var UPDATE_CHECK_GITHUB_REPO so you don't have to edit code.
 # Private repos are not supported here (API requires auth); use UPDATE_CHECK_JSON_URL instead.
-GITHUB_REPO = os.environ.get("UPDATE_CHECK_GITHUB_REPO", "").strip() or "aj-ebels/meetings"
+GITHUB_REPO = os.environ.get("UPDATE_CHECK_GITHUB_REPO", "").strip() or "aj-ebels/rapid-scribe"
 
 # Optional: JSON URL that returns {"version": "3.1", "url": "https://..."}.
 # Override with env var UPDATE_CHECK_JSON_URL. If set, GitHub check is skipped.
