@@ -6,6 +6,7 @@ import multiprocessing
 import sys
 import queue
 import threading
+import webbrowser
 from datetime import date, datetime
 from pathlib import Path
 
@@ -47,6 +48,7 @@ from .capture import (
 from .ai_summary import generate_ai_summary, generate_export_name, ask_meeting_ai
 from .api_key_storage import get_openai_api_key, set_openai_api_key, clear_openai_api_key
 from .diagnostic import write as diag
+from .update_check import check_for_updates
 from .meetings_storage import (
     load_meetings,
     save_meetings,
@@ -1759,6 +1761,58 @@ def main():
     status_text = "A key is already saved. Enter a new key and click Save key to replace it." if get_openai_api_key() else "No key saved yet. Get an API key from platform.openai.com and paste it above."
     app.openai_key_status_label = ctk.CTkLabel(settings_card, text=status_text, font=ctk.CTkFont(family=UI_FONT_FAMILY, size=F.tiny), text_color="gray", wraplength=520, anchor="w")
     app.openai_key_status_label.pack(anchor="w", pady=(0, UI_PAD_LG))
+
+    # Updates: check for new version (GitHub or JSON URL) and prompt to download
+    ctk.CTkLabel(settings_card, text="Updates", font=ctk.CTkFont(family=UI_FONT_FAMILY, size=F.header, weight="bold")).pack(anchor="w", pady=(0, 4))
+    ctk.CTkLabel(settings_card, text="Check for a newer version and open the download page in your browser.", font=ctk.CTkFont(family=UI_FONT_FAMILY, size=F.small), text_color="gray", wraplength=520, anchor="w").pack(anchor="w", pady=(0, 6))
+    update_row = ctk.CTkFrame(settings_card, fg_color="transparent")
+    update_row.pack(fill="x", pady=(0, UI_PAD_LG))
+    app.update_check_status_var = ctk.StringVar(value="")
+    app.update_check_status_label = ctk.CTkLabel(update_row, textvariable=app.update_check_status_var, font=ctk.CTkFont(family=UI_FONT_FAMILY, size=F.tiny), text_color="gray", wraplength=400, anchor="w")
+    app.update_check_status_label.pack(side="left", padx=(0, UI_PAD))
+
+    def _on_update_check_result(has_update, latest_version, download_url, error, from_startup=False):
+        app.update_check_status_var.set("")
+        if error:
+            if not from_startup:
+                messagebox.showerror("Update check", f"Could not check for updates: {error}", parent=root)
+            return
+        if has_update and latest_version and download_url:
+            if messagebox.askyesno("Update available", f"A new version ({latest_version}) is available. Open the download page in your browser?", parent=root):
+                try:
+                    webbrowser.open(download_url)
+                except Exception:
+                    messagebox.showerror("Open link", "Could not open the link. Copy it from the release page.", parent=root)
+        elif not from_startup:
+            messagebox.showinfo("Up to date", f"You're running the latest version (v{app_version}).", parent=root)
+
+    def _do_check_for_updates(from_startup=False):
+        app.update_check_status_var.set("Checking…")
+        result_holder = [None]
+
+        def on_done():
+            app.update_check_status_var.set("")
+            r = result_holder[0]
+            if r is None:
+                return
+            has_update, latest_version, download_url, error = r
+            _on_update_check_result(has_update, latest_version, download_url, error, from_startup=from_startup)
+
+        def worker():
+            result_holder[0] = check_for_updates(app_version)
+            try:
+                root.after(0, on_done)
+            except Exception:
+                pass
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    ctk.CTkButton(update_row, text="Check for updates", font=ctk.CTkFont(family=UI_FONT_FAMILY, size=F.small), width=140, height=32, corner_radius=UI_RADIUS, fg_color=COLORS["primary_fg"], hover_color=COLORS["primary_hover"], command=lambda: _do_check_for_updates(from_startup=False)).pack(side="left")
+
+    # Run update check once in background shortly after startup; only prompt if a newer version exists
+    def _run_startup_update_check():
+        _do_check_for_updates(from_startup=True)
+    root.after(3000, _run_startup_update_check)
 
     ctk.CTkLabel(settings_card, text="Capture mode", font=ctk.CTkFont(family=UI_FONT_FAMILY, size=F.header, weight="bold")).pack(anchor="w", pady=(0, 4))
     ctk.CTkLabel(settings_card, text="Meeting = in-process mic + loopback (PyAudioWPatch; loopback read only when data available). Loopback device below applies to Meeting mode.", font=ctk.CTkFont(family=UI_FONT_FAMILY, size=F.small), text_color="gray", wraplength=520, anchor="w").pack(anchor="w", pady=(0, UI_PAD))

@@ -71,6 +71,36 @@ The project includes an **Inno Setup** script so you can build a normal Windows 
 
 4. **Share** the setup exe. Users double-click to install, then run the app from the Start Menu or Desktop. To uninstall: **Settings → Apps → Installed apps** → **Rapid Scribe** → **Uninstall**.
 
+## In-app update check
+
+The app can prompt users when a newer version is available (Settings tab → **Check for updates**, and once automatically shortly after startup). To enable it, configure a source.
+
+### Public GitHub repo (simplest)
+
+If your repo is **public**, the app can read the latest release with no password:
+
+1. Publish releases (tag e.g. `v3.0`) and attach the setup exe as an asset.
+2. In `app/update_check.py`, set **GITHUB_REPO** to your repo:
+   ```python
+   GITHUB_REPO = "your-username/Meetings"   # use your actual GitHub username and repo name
+   ```
+   Or set the environment variable **UPDATE_CHECK_GITHUB_REPO** to `your-username/Meetings` when building or running the app (so you don’t edit code).
+
+No token or password is needed for a public repo.
+
+### Private GitHub repo
+
+GitHub’s API does **not** allow unauthenticated access to private repos. You should **not** put a Personal Access Token in the app (it would be shipped to every user and would grant access to your repo). Use one of these instead:
+
+- **Make the repo public** and use the steps above (no token).
+- **Use a public version URL:** Host a small JSON file that is publicly readable (e.g. a [public GitHub Gist](https://gist.github.com)) with:
+  ```json
+  {"version": "3.0", "url": "https://github.com/your-username/Meetings/releases/latest"}
+  ```
+  Set **UPDATE_CHECK_JSON_URL** (env var or in `app/update_check.py`) to that URL (for a Gist use the raw URL, e.g. `https://gist.githubusercontent.com/.../raw/.../version.json`). When you publish a new release, update the Gist’s `version` (and optionally `url`). When users click “Download”, they’re taken to the release page; for a private repo they must be logged in to GitHub with access to see and download the asset.
+
+If no source is configured, the **Check for updates** button still runs but reports that no update source is configured.
+
 ## Diagnosing "no audio transcribed" in the built app
 
 When the built exe runs but nothing gets transcribed, the app writes a **diagnostic log** so you can see where the pipeline stops (no console window = failures are otherwise silent).
