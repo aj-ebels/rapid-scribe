@@ -1,6 +1,7 @@
 """
 GUI and app controller: CustomTkinter window, tabs, start/stop recording, prompts dialog.
 """
+import copy
 import math
 import multiprocessing
 import sys
@@ -99,7 +100,7 @@ def poll_text_queue(app):
             except Exception:
                 pass
     if app.running:
-        app.root.after(200, lambda: poll_text_queue(app))
+        app.root.after(280, lambda: poll_text_queue(app))
     else:
         if getattr(app, "volume_bar", None) is not None:
             try:
@@ -599,6 +600,19 @@ def main():
     app.transcription_process = None
     app.capture_threads = []
     app.settings = load_settings()
+    # Background save: main thread never blocks on file I/O; worker writes a copy of meetings.
+    app._save_meetings_queue = queue.Queue()
+    def _save_meetings_worker():
+        while True:
+            try:
+                meetings = app._save_meetings_queue.get()
+                if meetings is None:
+                    break
+                save_meetings(meetings)
+            except Exception:
+                pass
+    app._save_meetings_thread = threading.Thread(target=_save_meetings_worker, daemon=True)
+    app._save_meetings_thread.start()
 
     # Meeting instances: load list, ensure at least one, select first
     app.meetings = load_meetings()
@@ -854,7 +868,7 @@ def main():
             app._startup_process = None
             _startup_check_done(models_err)
         except queue.Empty:
-            app.root.after(50, _poll_startup_queue)
+            app.root.after(100, _poll_startup_queue)
 
     # Run cache scan in a subprocess so the main process never blocks on it (no GIL contention).
     # Main thread polls the result queue with root.after(); Record button stays disabled until we get the result.
@@ -866,7 +880,7 @@ def main():
         daemon=True,
     )
     app._startup_process.start()
-    app.root.after(50, _poll_startup_queue)
+    app.root.after(100, _poll_startup_queue)
 
     # Transcript tab — meeting name and dates at top, then three equal-width columns: Manual Notes | Transcript | AI Summary
     meeting_name_row = ctk.CTkFrame(tab_transcript, fg_color="transparent")
@@ -1460,7 +1474,11 @@ def main():
             ai_summary=new_summary,
         )
         app.meetings.sort(key=lambda m: m.get("updated_at") or m.get("created_at") or "", reverse=True)
-        save_meetings(app.meetings)
+        # Write to disk in background so main thread never blocks on file I/O.
+        try:
+            app._save_meetings_queue.put_nowait(copy.deepcopy(app.meetings))
+        except queue.Full:
+            pass
 
     def _do_save_meeting():
         if app._save_meeting_after_id is not None:
@@ -1582,8 +1600,8 @@ def main():
         current_ids = [m.get("id") for m in app.meetings]
         cache = getattr(app, "_sidebar_row_cache", None)
         last_ids = getattr(app, "_sidebar_last_ids", [])
-        # In-place update when list unchanged (e.g. after auto-save or selection change)
-        if not force_full and cache is not None and last_ids == current_ids:
+        # In-place update when same set of meetings (avoids full rebuild when only order/content changed, e.g. after auto-save)
+        if not force_full and cache is not None and set(last_ids) == set(current_ids):
             for mid, data in cache.items():
                 m = get_meeting_by_id(app.meetings, mid)
                 if m:
@@ -1824,32 +1842,94 @@ def main():
     app.audio_mode_menu.pack(anchor="w", pady=(0, UI_PAD_LG))
 
     ctk.CTkLabel(settings_card, text="Meeting microphone (used when Capture mode = Meeting)", font=ctk.CTkFont(family=UI_FONT_FAMILY, size=F.small, weight="bold")).pack(anchor="w", pady=(UI_PAD, 4))
-    input_devices, _ = list_audio_devices()
-    input_options = ["System Default"] + [f"{d['index']}: {d['name']}" for d in input_devices if d.get("max_input_channels", 0) > 0]
+    # Device lists loaded in background so main thread never blocks on enumeration.
     app.meeting_mic_var = ctk.StringVar(value="System Default")
-    meeting_mic_idx = app.settings.get("meeting_mic_device")
-    if meeting_mic_idx is not None:
-        for d in input_devices:
-            if d["index"] == meeting_mic_idx:
-                app.meeting_mic_var.set(f"{d['index']}: {d['name']}")
-                break
-    app.meeting_mic_menu = ctk.CTkOptionMenu(settings_card, values=input_options, variable=app.meeting_mic_var, width=400, font=ctk.CTkFont(family=UI_FONT_FAMILY, size=F.small), command=lambda v: _apply_settings(app))
+    app.meeting_mic_menu = ctk.CTkOptionMenu(settings_card, values=["System Default", "Loading…"], variable=app.meeting_mic_var, width=400, font=ctk.CTkFont(family=UI_FONT_FAMILY, size=F.small), command=lambda v: _apply_settings(app))
     app.meeting_mic_menu.pack(anchor="w", pady=(0, UI_PAD_LG))
 
     ctk.CTkLabel(settings_card, text="Loopback device (used for Loopback mode and for Meeting mode)", font=ctk.CTkFont(family=UI_FONT_FAMILY, size=F.small, weight="bold")).pack(anchor="w", pady=(UI_PAD, 4))
-    loopback_devices, lb_err = list_loopback_devices()
-    loopback_options = ["System Default"] + [f"{d['index']}: {d['name']}" for d in loopback_devices]
-    if lb_err:
-        loopback_options = ["System Default", f"(Error: {lb_err})"]
     app.loopback_device_var = ctk.StringVar(value="System Default")
-    lb_idx = app.settings.get("loopback_device_index")
-    if lb_idx is not None and loopback_devices:
-        for d in loopback_devices:
-            if d["index"] == lb_idx:
-                app.loopback_device_var.set(f"{d['index']}: {d['name']}")
-                break
-    app.loopback_device_menu = ctk.CTkOptionMenu(settings_card, values=loopback_options, variable=app.loopback_device_var, width=400, font=ctk.CTkFont(family=UI_FONT_FAMILY, size=F.small), command=lambda v: _apply_settings(app))
+    app.loopback_device_menu = ctk.CTkOptionMenu(settings_card, values=["System Default", "Loading…"], variable=app.loopback_device_var, width=400, font=ctk.CTkFont(family=UI_FONT_FAMILY, size=F.small), command=lambda v: _apply_settings(app))
     app.loopback_device_menu.pack(anchor="w", pady=(0, UI_PAD))
+
+    def _populate_devices_ui():
+        """Run on main thread after background device enumeration; update menus and capture info label."""
+        r = getattr(app, "_devices_result", None)
+        if r is None:
+            return
+        app.meeting_mic_menu.configure(values=r["input_options"])
+        if r.get("meeting_mic_value"):
+            app.meeting_mic_var.set(r["meeting_mic_value"])
+        app.loopback_device_menu.configure(values=r["loopback_options"])
+        if r.get("loopback_value"):
+            app.loopback_device_var.set(r["loopback_value"])
+        app.capture_dev_info_var.set(r["dev_info"])
+        if app._devices_poll_id is not None:
+            try:
+                root.after_cancel(app._devices_poll_id)
+            except Exception:
+                pass
+            app._devices_poll_id = None
+
+    def _load_devices_worker():
+        """Run in background thread; set app._devices_result when done so main thread can update UI."""
+        try:
+            input_devices, _ = list_audio_devices()
+            loopback_devices, lb_err = list_loopback_devices()
+            dev_idx, dev_err = get_default_monitor_device()
+            mode = app.settings.get("audio_mode") or AUDIO_MODE_DEFAULT
+            mode_label = {"default": "Default input", "loopback": "Loopback", "meeting": "Meeting (mic + loopback)", "meeting_ffmpeg": "Meeting (mic + loopback)"}.get(mode, "Default input")
+            if dev_err:
+                dev_info = f"Capture: {mode_label} — {dev_err}"
+            elif dev_idx is not None and input_devices:
+                name = next((d["name"] for d in input_devices if d["index"] == dev_idx), f"Device {dev_idx}")
+                dev_info = f"Capture: {mode_label} · Input: {name}"
+            else:
+                dev_info = f"Capture: {mode_label}"
+            input_options = ["System Default"] + [f"{d['index']}: {d['name']}" for d in input_devices if d.get("max_input_channels", 0) > 0]
+            loopback_options = ["System Default"] + [f"{d['index']}: {d['name']}" for d in loopback_devices]
+            if lb_err:
+                loopback_options = ["System Default", f"(Error: {lb_err})"]
+            meeting_mic_value = "System Default"
+            meeting_mic_idx = app.settings.get("meeting_mic_device")
+            if meeting_mic_idx is not None:
+                for d in input_devices:
+                    if d["index"] == meeting_mic_idx:
+                        meeting_mic_value = f"{d['index']}: {d['name']}"
+                        break
+            loopback_value = "System Default"
+            lb_idx = app.settings.get("loopback_device_index")
+            if lb_idx is not None and loopback_devices:
+                for d in loopback_devices:
+                    if d["index"] == lb_idx:
+                        loopback_value = f"{d['index']}: {d['name']}"
+                        break
+            app._devices_result = {
+                "input_options": input_options,
+                "loopback_options": loopback_options,
+                "dev_info": dev_info,
+                "meeting_mic_value": meeting_mic_value,
+                "loopback_value": loopback_value,
+            }
+        except Exception:
+            app._devices_result = {
+                "input_options": ["System Default"],
+                "loopback_options": ["System Default"],
+                "dev_info": "Capture: — (device list failed)",
+                "meeting_mic_value": "System Default",
+                "loopback_value": "System Default",
+            }
+
+    def _poll_devices_ready():
+        if getattr(app, "_devices_result", None) is not None:
+            _populate_devices_ui()
+            return
+        app._devices_poll_id = root.after(100, _poll_devices_ready)
+
+    app._devices_result = None
+    app._devices_poll_id = None
+    threading.Thread(target=_load_devices_worker, daemon=True).start()
+    app._devices_poll_id = root.after(100, _poll_devices_ready)
 
     def _apply_settings(app):
         mode_str = app.audio_mode_var.get()
@@ -1871,18 +1951,9 @@ def main():
         app.settings = {**app.settings, "audio_mode": mode, "meeting_mic_device": meeting_idx, "loopback_device_index": loopback_idx}
         save_settings(app.settings)
 
-    mode = app.settings.get("audio_mode") or AUDIO_MODE_DEFAULT
-    mode_label = {"default": "Default input", "loopback": "Loopback", "meeting": "Meeting (mic + loopback)", "meeting_ffmpeg": "Meeting (mic + loopback)"}.get(mode, "Default input")
-    devices_list, _ = list_audio_devices()
-    dev_idx, dev_err = get_default_monitor_device()
-    if dev_err:
-        dev_info = f"Capture: {mode_label} — {dev_err}"
-    elif dev_idx is not None and devices_list:
-        name = next((d["name"] for d in devices_list if d["index"] == dev_idx), f"Device {dev_idx}")
-        dev_info = f"Capture: {mode_label} · Input: {name}"
-    else:
-        dev_info = f"Capture: {mode_label}"
-    ctk.CTkLabel(main_content, text=dev_info, font=ctk.CTkFont(family=UI_FONT_FAMILY, size=F.small), text_color="gray").pack(anchor="w", padx=UI_PAD_LG, pady=(0, 4))
+    # Capture device summary updated when background device enumeration completes.
+    app.capture_dev_info_var = ctk.StringVar(value="Capture: … (loading…)")
+    ctk.CTkLabel(main_content, textvariable=app.capture_dev_info_var, font=ctk.CTkFont(family=UI_FONT_FAMILY, size=F.small), text_color="gray").pack(anchor="w", padx=UI_PAD_LG, pady=(0, 4))
     app.model_status_warning_color = COLORS["error_text"][1]
     app.model_status_label = ctk.CTkLabel(main_content, textvariable=app.model_status_var, font=ctk.CTkFont(family=UI_FONT_FAMILY, size=F.small), text_color="gray", wraplength=700)
     app.model_status_label.pack(anchor="w", padx=UI_PAD_LG, pady=(0, UI_PAD))
