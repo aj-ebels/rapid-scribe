@@ -415,7 +415,14 @@ def _get_dpi_scale():
     return scale
 
 
-def main():
+def main(splash_window=None):
+    # Close splash before creating any CTk/widgets so only one Tk instance exists (avoids "pyimage1 doesn't exist")
+    if splash_window is not None:
+        try:
+            splash_window.destroy()
+        except Exception:
+            pass
+        splash_window = None
     # Theme and scaling (model loads on first Start or when installing from Models tab)
     ctk.set_appearance_mode("dark")
     # When frozen (PyInstaller), use bundle root so themes/assets are found (onefile: _MEIPASS; onedir: exe dir)
