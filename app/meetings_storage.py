@@ -6,7 +6,7 @@ import json
 import os
 import sys
 import uuid
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from pathlib import Path
 
 _BASE = Path(__file__).resolve().parent.parent
@@ -34,6 +34,33 @@ def _now_iso():
     return datetime.now(timezone.utc).isoformat()
 
 
+def _today_iso_date():
+    return date.today().isoformat()
+
+
+def _normalize_meeting_date(value, fallback=None):
+    """Return YYYY-MM-DD when value looks like a date/timestamp; else fallback/today."""
+    if isinstance(value, str):
+        v = value.strip()
+        if v:
+            try:
+                # Preferred format: YYYY-MM-DD
+                return date.fromisoformat(v).isoformat()
+            except Exception:
+                pass
+            try:
+                # Legacy/alternate format: full ISO datetime
+                return datetime.fromisoformat(v.replace("Z", "+00:00")).date().isoformat()
+            except Exception:
+                pass
+    if isinstance(fallback, str) and fallback.strip():
+        try:
+            return datetime.fromisoformat(fallback.replace("Z", "+00:00")).date().isoformat()
+        except Exception:
+            pass
+    return _today_iso_date()
+
+
 def load_meetings():
     """Load meetings from JSON. Returns list of meeting dicts sorted by updated_at descending."""
     path = _get_meetings_path()
@@ -49,6 +76,9 @@ def load_meetings():
         return []
     # Sort by updated_at desc (most recent first)
     meetings = [m for m in meetings if isinstance(m, dict) and m.get("id")]
+    for m in meetings:
+        # Backfill meeting_date for older records; prefer created_at's calendar date.
+        m["meeting_date"] = _normalize_meeting_date(m.get("meeting_date"), fallback=m.get("created_at"))
     meetings.sort(key=lambda m: m.get("updated_at") or m.get("created_at") or "", reverse=True)
     return meetings
 
@@ -67,6 +97,7 @@ def create_meeting(meeting_name="New Meeting"):
     return {
         "id": str(uuid.uuid4()),
         "meeting_name": meeting_name or "New Meeting",
+        "meeting_date": _today_iso_date(),
         "manual_notes": "",
         "transcript": "",
         "ai_summary": "",

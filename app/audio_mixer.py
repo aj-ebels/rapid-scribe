@@ -213,6 +213,7 @@ class AudioMixer:
                     time.sleep(0.005)
                     continue
                 mic_mono = _bytes_to_float_mono(mic_data, self._mic_channels)
+                mic_rms_raw = _rms32(mic_mono)
                 mic_mono, mic_stats = self._mic_leveler.process(mic_mono)
                 self._mic_read_errors = 0
             except Exception as e:
@@ -261,7 +262,8 @@ class AudioMixer:
             if level_cb is not None:
                 try:
                     loopback_rms = _rms32(loopback_mono)
-                    level_cb(max(mic_rms, loopback_rms))
+                    # Use raw mic RMS for the UI meter so AGC does not make silence look loud.
+                    level_cb(max(mic_rms_raw, loopback_rms))
                 except Exception as e:
                     log.debug("Level callback failed: %s", e)
             if health_cb is not None:

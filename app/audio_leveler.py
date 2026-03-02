@@ -29,13 +29,13 @@ def _rms32(samples: np.ndarray) -> float:
 class AudioLevelerConfig:
     enabled: bool = True
     input_sensitivity: float = 1.0
-    target_rms: float = 0.06
+    target_rms: float = 0.045
     min_gain_db: float = -12.0
-    max_gain_db: float = 18.0
+    max_gain_db: float = 12.0
     attack: float = 0.25
     release: float = 0.06
     expander_enabled: bool = True
-    expander_ratio: float = 2.0
+    expander_ratio: float = 3.0
     vad_floor: float = 0.0012
     vad_noise_multiplier: float = 2.8
     hangover_blocks: int = 6
@@ -107,6 +107,9 @@ class AudioLeveler:
         eps = 1e-6
         target = max(self.cfg.vad_floor * 1.2, float(self.cfg.target_rms))
         desired_gain = (target / max(rms_in, eps)) * max(0.3, min(4.0, float(self.cfg.input_sensitivity)))
+        if not active:
+            # Do not chase noise floor upward when speech is absent.
+            desired_gain = min(desired_gain, 1.0)
         min_g = math.pow(10.0, float(self.cfg.min_gain_db) / 20.0)
         max_g = math.pow(10.0, float(self.cfg.max_gain_db) / 20.0)
         desired_gain = max(min_g, min(max_g, desired_gain))
@@ -124,6 +127,9 @@ class AudioLeveler:
                 rel = max(0.05, rms_in / max(thr, eps))
                 attn = pow(rel, max(0.0, float(self.cfg.expander_ratio) - 1.0))
                 y = y * attn
+            if not active:
+                # Extra suppression during non-speech windows reduces ASR hallucinations.
+                y = y * 0.35
 
         ceiling = max(0.5, min(0.999, float(self.cfg.limiter_ceiling)))
         over = np.abs(y) > ceiling

@@ -95,8 +95,11 @@ def poll_text_queue(app):
             pass
         if getattr(app, "volume_bar", None) is not None:
             try:
-                # Map RMS to 0..1 (speech roughly 0.005–0.3)
-                p = min(1.0, max(0.0, level / 0.3))
+                # Noise-aware meter mapping: avoid showing a "hot" bar on quiet background noise.
+                floor = 0.003
+                ceiling = 0.08
+                p = (float(level) - floor) / max(1e-6, (ceiling - floor))
+                p = min(1.0, max(0.0, p))
                 app.volume_bar.set(p)
             except Exception:
                 pass
@@ -418,8 +421,8 @@ def _build_leveler_config(settings):
     cfg = AudioLevelerConfig()
     cfg.enabled = bool(settings.get("audio_auto_level", True))
     cfg.input_sensitivity = max(0.5, min(3.0, float(settings.get("input_sensitivity", 1.0))))
-    cfg.target_rms = max(0.01, min(0.2, float(settings.get("agc_target_rms", 0.06))))
-    cfg.max_gain_db = max(6.0, min(30.0, float(settings.get("agc_max_boost_db", 18.0))))
+    cfg.target_rms = max(0.01, min(0.2, float(settings.get("agc_target_rms", 0.045))))
+    cfg.max_gain_db = max(6.0, min(30.0, float(settings.get("agc_max_boost_db", 12.0))))
     cfg.expander_enabled = bool(settings.get("audio_expander_enabled", True))
     cfg.hangover_blocks = max(2, min(20, int(settings.get("audio_hangover_blocks", 6))))
     return cfg
@@ -532,9 +535,15 @@ def main(splash_window=None):
     F = type("F", (), {"title": _fs(18), "header": _fs(16), "body": _fs(14), "small": _fs(13), "tiny": _fs(12)})()
 
     def _format_iso_date(iso_str):
-        """Format ISO timestamp for display (e.g. 'Feb 9, 2025')."""
+        """Format ISO date/timestamp for display (e.g. 'Feb 9, 2025')."""
         if not iso_str:
             return ""
+        try:
+            # Date-only value (YYYY-MM-DD)
+            d = date.fromisoformat(str(iso_str).strip())
+            return d.strftime("%b ") + str(d.day) + d.strftime(", %Y")
+        except Exception:
+            pass
         try:
             dt = datetime.fromisoformat(iso_str.replace("Z", "+00:00"))
             if dt.tzinfo:
@@ -542,6 +551,26 @@ def main(splash_window=None):
             return dt.strftime("%b ") + str(dt.day) + dt.strftime(", %Y")
         except Exception:
             return str(iso_str)[:16]
+
+    def _normalize_meeting_date(value, fallback=None):
+        """Return normalized YYYY-MM-DD string from UI/storage values."""
+        if isinstance(value, str):
+            v = value.strip()
+            if v:
+                try:
+                    return date.fromisoformat(v).isoformat()
+                except Exception:
+                    pass
+                try:
+                    return datetime.fromisoformat(v.replace("Z", "+00:00")).date().isoformat()
+                except Exception:
+                    pass
+        if isinstance(fallback, str) and fallback.strip():
+            try:
+                return datetime.fromisoformat(fallback.replace("Z", "+00:00")).date().isoformat()
+            except Exception:
+                pass
+        return date.today().isoformat()
 
     UI_RADIUS = 10
     UI_PAD = 12
@@ -1015,6 +1044,41 @@ def main(splash_window=None):
         root.after(200, check_done)
     app.generate_name_btn = ctk.CTkButton(name_line, text="Generate name", font=ctk.CTkFont(family=UI_FONT_FAMILY, size=F.small), width=100, height=28, corner_radius=UI_RADIUS, fg_color=COLORS["secondary_fg"], hover_color=COLORS["secondary_hover"], command=_do_generate_meeting_name, state="disabled")
     app.generate_name_btn.pack(side="left", padx=4, pady=4)
+    ctk.CTkLabel(name_line, text="Meeting date:", font=ctk.CTkFont(family=UI_FONT_FAMILY, size=F.small)).pack(side="left", padx=(12, 4), pady=4)
+    app.meeting_date_var = ctk.StringVar(value=date.today().isoformat())
+    app.meeting_date_entry = ctk.CTkEntry(
+        name_line,
+        textvariable=app.meeting_date_var,
+        width=120,
+        height=28,
+        placeholder_text="YYYY-MM-DD",
+        font=ctk.CTkFont(family=UI_FONT_FAMILY, size=F.small),
+    )
+    app.meeting_date_entry.pack(side="left", padx=4, pady=4)
+    def _set_meeting_date_today():
+        app.meeting_date_var.set(date.today().isoformat())
+        schedule_save_meeting()
+    ctk.CTkButton(
+        name_line,
+        text="Today",
+        font=ctk.CTkFont(family=UI_FONT_FAMILY, size=F.small),
+        width=64,
+        height=28,
+        corner_radius=UI_RADIUS,
+        fg_color=COLORS["secondary_fg"],
+        hover_color=COLORS["secondary_hover"],
+        command=_set_meeting_date_today,
+    ).pack(side="left", padx=4, pady=4)
+    def _on_meeting_date_focus_out(event=None):
+        normalized = _normalize_meeting_date(app.meeting_date_var.get())
+        if app.meeting_date_var.get() != normalized:
+            app.meeting_date_var.set(normalized)
+        _do_save_meeting()
+    def _on_meeting_date_enter(event=None):
+        _on_meeting_date_focus_out()
+        return "break"
+    app.meeting_date_entry.bind("<FocusOut>", _on_meeting_date_focus_out)
+    app.meeting_date_entry.bind("<Return>", _on_meeting_date_enter)
     def _update_generate_name_btn_state():
         has_summary = bool(getattr(app, "summary_text", None) and app.summary_text.get("1.0", "end").strip())
         app.generate_name_btn.configure(state="normal" if has_summary else "disabled")
@@ -1179,8 +1243,13 @@ def main(splash_window=None):
             name_part = name_part.strip() or "export"
         else:
             name_part = "export"
-        if app.export_prepend_date_var.get():
-            default_name = f"{date.today().isoformat()} {name_part}.md"
+        export_meeting = get_meeting_by_id(app.meetings, app.current_meeting_id) if app.current_meeting_id else None
+        meeting_date_for_export = _normalize_meeting_date(
+            app.meeting_date_var.get(),
+            fallback=(export_meeting or {}).get("created_at"),
+        )
+        if app.export_prepend_meeting_date_var.get():
+            default_name = f"{meeting_date_for_export} {name_part}.md"
         else:
             default_name = f"{name_part}.md"
         path = filedialog.asksaveasfilename(parent=root, defaultextension=".md", filetypes=[("Markdown", "*.md"), ("All files", "*.*")], initialfile=default_name)
@@ -1527,13 +1596,16 @@ def main(splash_window=None):
 
     export_row = ctk.CTkFrame(tab_transcript, fg_color="transparent")
     export_row.pack(fill="x", pady=(UI_PAD, UI_PAD_LG), padx=UI_PAD_LG)
-    app.export_prepend_date_var = ctk.BooleanVar(value=app.settings.get("export_prepend_date", True))
-    def _on_prepend_date_changed():
-        app.settings["export_prepend_date"] = app.export_prepend_date_var.get()
+    _prepend_default = app.settings.get("export_prepend_meeting_date")
+    if _prepend_default is None:
+        _prepend_default = app.settings.get("export_prepend_date", True)
+    app.export_prepend_meeting_date_var = ctk.BooleanVar(value=bool(_prepend_default))
+    def _on_prepend_meeting_date_changed():
+        app.settings["export_prepend_meeting_date"] = app.export_prepend_meeting_date_var.get()
         save_settings(app.settings)
     ctk.CTkCheckBox(
-        export_row, text="Prepend today's date to export file name", variable=app.export_prepend_date_var,
-        font=ctk.CTkFont(family=UI_FONT_FAMILY, size=F.small), command=_on_prepend_date_changed,
+        export_row, text="Prepend meeting date to export file name", variable=app.export_prepend_meeting_date_var,
+        font=ctk.CTkFont(family=UI_FONT_FAMILY, size=F.small), command=_on_prepend_meeting_date_changed,
         border_width=1, corner_radius=3, checkbox_width=18, checkbox_height=18
     ).pack(side="left", padx=8, pady=4)
     ctk.CTkButton(export_row, text="Export", font=ctk.CTkFont(family=UI_FONT_FAMILY, size=F.small), width=64, height=28, corner_radius=UI_RADIUS, fg_color=COLORS["secondary_fg"], hover_color=COLORS["secondary_hover"], command=_export_markdown).pack(side="left", padx=(0, 0), pady=4)
@@ -1550,11 +1622,16 @@ def main(splash_window=None):
         if not meeting:
             return
         new_name = (app.meeting_name_var.get() or "").strip() or "New Meeting"
+        new_meeting_date = _normalize_meeting_date(
+            app.meeting_date_var.get(),
+            fallback=meeting.get("created_at"),
+        )
         new_notes = app.manual_notes.get("1.0", "end").strip()
         new_transcript = app.log.get("1.0", "end").strip()
         new_summary = app.summary_text.get("1.0", "end").strip()
         if (
             meeting.get("meeting_name") == new_name
+            and meeting.get("meeting_date") == new_meeting_date
             and meeting.get("manual_notes") == new_notes
             and meeting.get("transcript") == new_transcript
             and meeting.get("ai_summary") == new_summary
@@ -1563,6 +1640,7 @@ def main(splash_window=None):
         update_meeting_fields(
             meeting,
             meeting_name=new_name,
+            meeting_date=new_meeting_date,
             manual_notes=new_notes,
             transcript=new_transcript,
             ai_summary=new_summary,
@@ -1606,13 +1684,16 @@ def main(splash_window=None):
     app.schedule_save_meeting = schedule_save_meeting
 
     def _set_meeting_dates_var(meeting):
-        """Update the Created / Updated line from meeting dict."""
+        """Update the meeting date + Created / Updated line from meeting dict."""
         if not meeting:
             app.meeting_dates_var.set("")
             return
+        meeting_date = _format_iso_date(meeting.get("meeting_date"))
         created = _format_iso_date(meeting.get("created_at"))
         updated = _format_iso_date(meeting.get("updated_at"))
-        parts = [f"Created: {created}"] if created else []
+        parts = [f"Meeting date: {meeting_date}"] if meeting_date else []
+        if created:
+            parts.append(f"Created: {created}")
         if updated:
             parts.append(f"Updated: {updated}")
         app.meeting_dates_var.set("  ·  ".join(parts))
@@ -1624,6 +1705,7 @@ def main(splash_window=None):
         try:
             app.current_meeting_id = meeting["id"]
             app.meeting_name_var.set(meeting.get("meeting_name") or "New Meeting")
+            app.meeting_date_var.set(_normalize_meeting_date(meeting.get("meeting_date"), fallback=meeting.get("created_at")))
             _set_meeting_dates_var(meeting)
             app.manual_notes.delete("1.0", "end")
             app.manual_notes.insert("1.0", meeting.get("manual_notes") or "")

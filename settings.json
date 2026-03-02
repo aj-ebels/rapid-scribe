@@ -1,6 +1,6 @@
 {
   "audio_mode": "meeting",
-  "meeting_mic_device": 2,
+  "meeting_mic_device": null,
   "loopback_device_index": null,
   "transcription_model": "istupakov/parakeet-tdt-0.6b-v2-onnx",
   "chunk_duration_sec": 5.0,
@@ -20,9 +20,9 @@
   "audio_device_profiles": {
     "meeting:System Default": {
       "input_sensitivity": 1.0,
-      "min_rms_transcribe": 0.005,
+      "min_rms_transcribe": 0.005000000000000001,
       "audio_auto_level": true,
-      "updated_at": "2026-03-02T08:43:04"
+      "updated_at": "2026-03-02T13:08:19"
     },
     "meeting:1: Echo Cancelling Speakerphone (2": {
       "input_sensitivity": 1.0,
@@ -38,7 +38,7 @@
     }
   },
   "auto_generate_export_name": true,
-  "export_prepend_date": true,
+  "export_prepend_meeting_date": true,
   "auto_generate_summary_when_stopping": false,
   "auto_save_delay_seconds": 1,
   "ui_scale": null,

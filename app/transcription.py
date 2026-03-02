@@ -203,7 +203,7 @@ def transcription_worker(chunk_queue, text_queue, stop_event, model_id=None):
     last_min_rms_refresh = 0.0
     adaptive_gate = True
     noise_floor = max(0.0008, min_rms * 0.5)
-    gate_hangover_chunks = 2
+    gate_hangover_chunks = 0
     hangover_left = 0
     while not stop_event.is_set():
         try:
@@ -222,14 +222,14 @@ def transcription_worker(chunk_queue, text_queue, stop_event, model_id=None):
                     cfg_min_rms = MIN_RMS_TRANSCRIBE_DEFAULT
                 min_rms = max(0.001, min(0.05, float(cfg_min_rms)))
                 adaptive_gate = bool(cfg.get("adaptive_audio_gating", True))
-                gate_hangover_chunks = max(0, min(8, int(cfg.get("audio_gate_hangover_chunks", 2))))
+                gate_hangover_chunks = max(0, min(8, int(cfg.get("audio_gate_hangover_chunks", 0))))
                 last_min_rms_refresh = now
             effective_min_rms = min_rms
             if rms is not None and adaptive_gate:
                 learn_upper = max(min_rms * 5.0, noise_floor * 1.8)
                 if rms <= learn_upper:
                     noise_floor = 0.95 * noise_floor + 0.05 * float(rms)
-                effective_min_rms = max(min_rms, noise_floor * 2.8)
+                effective_min_rms = max(min_rms, noise_floor * 3.8)
             if rms is not None and rms < effective_min_rms:
                 if hangover_left > 0:
                     hangover_left -= 1

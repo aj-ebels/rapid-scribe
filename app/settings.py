@@ -47,18 +47,18 @@ def load_settings(default_model=None):
         "min_chunk_sec": 1.5,
         "max_chunk_sec": 8.0,
         "silence_duration_sec": 0.5,
-        "min_rms_transcribe": 0.005,
+        "min_rms_transcribe": 0.007,
         "audio_auto_level": True,
         "input_sensitivity": 1.0,
-        "agc_target_rms": 0.06,
-        "agc_max_boost_db": 18.0,
+        "agc_target_rms": 0.045,
+        "agc_max_boost_db": 12.0,
         "audio_expander_enabled": True,
         "adaptive_audio_gating": True,
         "audio_hangover_blocks": 6,
-        "audio_gate_hangover_chunks": 2,
+        "audio_gate_hangover_chunks": 0,
         "audio_device_profiles": {},
         "auto_generate_export_name": True,
-        "export_prepend_date": True,
+        "export_prepend_meeting_date": True,
         "auto_generate_summary_when_stopping": False,
         "auto_save_delay_seconds": 1,
         "ui_scale": None,  # None = auto (DPI-based); else float 0.5–2.0 for manual scale
@@ -106,8 +106,11 @@ def load_settings(default_model=None):
                 out["audio_device_profiles"] = data["audio_device_profiles"]
             if "auto_generate_export_name" in data:
                 out["auto_generate_export_name"] = bool(data["auto_generate_export_name"])
-            if "export_prepend_date" in data:
-                out["export_prepend_date"] = bool(data["export_prepend_date"])
+            if "export_prepend_meeting_date" in data:
+                out["export_prepend_meeting_date"] = bool(data["export_prepend_meeting_date"])
+            elif "export_prepend_date" in data:
+                # Backward compatibility with older settings key.
+                out["export_prepend_meeting_date"] = bool(data["export_prepend_date"])
             if "auto_generate_summary_when_stopping" in data:
                 out["auto_generate_summary_when_stopping"] = bool(data["auto_generate_summary_when_stopping"])
             if "auto_save_delay_seconds" in data and isinstance(data["auto_save_delay_seconds"], (int, float)):
