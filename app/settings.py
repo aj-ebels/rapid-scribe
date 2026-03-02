@@ -48,6 +48,15 @@ def load_settings(default_model=None):
         "max_chunk_sec": 8.0,
         "silence_duration_sec": 0.5,
         "min_rms_transcribe": 0.005,
+        "audio_auto_level": True,
+        "input_sensitivity": 1.0,
+        "agc_target_rms": 0.06,
+        "agc_max_boost_db": 18.0,
+        "audio_expander_enabled": True,
+        "adaptive_audio_gating": True,
+        "audio_hangover_blocks": 6,
+        "audio_gate_hangover_chunks": 2,
+        "audio_device_profiles": {},
         "auto_generate_export_name": True,
         "export_prepend_date": True,
         "auto_generate_summary_when_stopping": False,
@@ -77,6 +86,24 @@ def load_settings(default_model=None):
                 out["silence_duration_sec"] = max(0.2, min(2.0, float(data["silence_duration_sec"])))
             if "min_rms_transcribe" in data and isinstance(data["min_rms_transcribe"], (int, float)):
                 out["min_rms_transcribe"] = max(0.001, min(0.05, float(data["min_rms_transcribe"])))
+            if "audio_auto_level" in data:
+                out["audio_auto_level"] = bool(data["audio_auto_level"])
+            if "input_sensitivity" in data and isinstance(data["input_sensitivity"], (int, float)):
+                out["input_sensitivity"] = max(0.5, min(3.0, float(data["input_sensitivity"])))
+            if "agc_target_rms" in data and isinstance(data["agc_target_rms"], (int, float)):
+                out["agc_target_rms"] = max(0.01, min(0.2, float(data["agc_target_rms"])))
+            if "agc_max_boost_db" in data and isinstance(data["agc_max_boost_db"], (int, float)):
+                out["agc_max_boost_db"] = max(6.0, min(30.0, float(data["agc_max_boost_db"])))
+            if "audio_expander_enabled" in data:
+                out["audio_expander_enabled"] = bool(data["audio_expander_enabled"])
+            if "adaptive_audio_gating" in data:
+                out["adaptive_audio_gating"] = bool(data["adaptive_audio_gating"])
+            if "audio_hangover_blocks" in data and isinstance(data["audio_hangover_blocks"], (int, float)):
+                out["audio_hangover_blocks"] = max(2, min(20, int(float(data["audio_hangover_blocks"]))))
+            if "audio_gate_hangover_chunks" in data and isinstance(data["audio_gate_hangover_chunks"], (int, float)):
+                out["audio_gate_hangover_chunks"] = max(0, min(8, int(float(data["audio_gate_hangover_chunks"]))))
+            if "audio_device_profiles" in data and isinstance(data["audio_device_profiles"], dict):
+                out["audio_device_profiles"] = data["audio_device_profiles"]
             if "auto_generate_export_name" in data:
                 out["auto_generate_export_name"] = bool(data["auto_generate_export_name"])
             if "export_prepend_date" in data:

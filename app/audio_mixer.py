@@ -13,6 +13,7 @@ import time
 from collections import deque
 import numpy as np
 from scipy.signal import resample
+from .audio_leveler import AudioLeveler, AudioLevelerConfig
 
 log = logging.getLogger(__name__)
 
@@ -51,10 +52,21 @@ class AudioMixer:
     Outputs stereo: Left = mic, Right = loopback. Fills loopback gaps with silence.
     """
 
-    def __init__(self, sample_rate: int, frames_per_read: int = 4096, gain: float = 0.7):
+    def __init__(
+        self,
+        sample_rate: int,
+        frames_per_read: int = 4096,
+        gain: float = 0.7,
+        *,
+        mic_gain: float | None = None,
+        loopback_gain: float | None = None,
+        mic_leveler_config: AudioLevelerConfig | None = None,
+    ):
         self.sample_rate = sample_rate
         self.frames_per_read = frames_per_read
-        self.gain = gain
+        self.mic_gain = float(gain if mic_gain is None else mic_gain)
+        self.loopback_gain = float(gain if loopback_gain is None else loopback_gain)
+        self._mic_leveler = AudioLeveler(mic_leveler_config or AudioLevelerConfig())
         self._p = None
         self._mic_stream = None
         self._loopback_stream = None
@@ -67,6 +79,7 @@ class AudioMixer:
         self._lock = threading.Lock()
         self._stereo_callback = None
         self._level_callback = None
+        self._health_callback = None
         # Time-aligned loopback: samples at loopback sample rate, consumed per block
         self._loopback_buffer = deque()
         self._loopback_buffer_samples = 0
@@ -179,6 +192,11 @@ class AudioMixer:
         with self._lock:
             self._level_callback = callback
 
+    def set_health_callback(self, callback):
+        """Set callable(status: dict) invoked from capture thread with signal-health info."""
+        with self._lock:
+            self._health_callback = callback
+
     def _run_capture(self):
         """
         Mic is read blocking (steady stream). Loopback is drained into a buffer;
@@ -195,6 +213,7 @@ class AudioMixer:
                     time.sleep(0.005)
                     continue
                 mic_mono = _bytes_to_float_mono(mic_data, self._mic_channels)
+                mic_mono, mic_stats = self._mic_leveler.process(mic_mono)
                 self._mic_read_errors = 0
             except Exception as e:
                 if not self._running:
@@ -238,16 +257,31 @@ class AudioMixer:
 
             with self._lock:
                 level_cb = self._level_callback
+                health_cb = self._health_callback
             if level_cb is not None:
                 try:
                     loopback_rms = _rms32(loopback_mono)
                     level_cb(max(mic_rms, loopback_rms))
                 except Exception as e:
                     log.debug("Level callback failed: %s", e)
+            if health_cb is not None:
+                try:
+                    health_cb({
+                        "source": "meeting_mic",
+                        "rms_in": float(mic_stats.get("rms_in", mic_rms)),
+                        "rms_out": float(mic_stats.get("rms_out", mic_rms)),
+                        "noise_floor": float(mic_stats.get("noise_floor", 0.0)),
+                        "threshold": float(mic_stats.get("threshold", 0.0)),
+                        "gain_db": float(mic_stats.get("gain_db", 0.0)),
+                        "clip_count": int(mic_stats.get("clip_count", 0)),
+                        "active": bool(mic_stats.get("active", 0.0) >= 0.5),
+                    })
+                except Exception as e:
+                    log.debug("Health callback failed: %s", e)
 
             stereo = np.column_stack([
-                mic_mono * self.gain,
-                loopback_mono * self.gain,
+                mic_mono * self.mic_gain,
+                loopback_mono * self.loopback_gain,
             ]).astype(np.float32)
             with self._lock:
                 cb = self._stereo_callback

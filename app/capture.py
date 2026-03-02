@@ -9,6 +9,7 @@ from pathlib import Path
 import numpy as np
 
 from .diagnostic import write as diag
+from .audio_leveler import AudioLeveler, AudioLevelerConfig
 import sounddevice as sd
 from scipy.io import wavfile
 from scipy.signal import resample
@@ -36,14 +37,26 @@ def _rms32(chunk: np.ndarray) -> float:
     return float(np.sqrt(np.mean(buf * buf)))
 
 
-def _is_silent(chunk: np.ndarray) -> bool:
+def _is_silent(chunk: np.ndarray, threshold: float = SILENCE_RMS_THRESHOLD) -> bool:
     """True if chunk has very low energy (silence or negligible noise)."""
     rms = _rms32(chunk)
-    return rms < SILENCE_RMS_THRESHOLD
+    return rms < threshold
 
 
-def capture_worker(device_index, chunk_queue, stop_event):
+def _build_leveler_config(leveler_settings: dict | None) -> AudioLevelerConfig:
+    leveler_settings = leveler_settings or {}
+    cfg = AudioLevelerConfig()
+    cfg.enabled = bool(leveler_settings.get("audio_auto_level", True))
+    cfg.input_sensitivity = max(0.5, min(3.0, float(leveler_settings.get("input_sensitivity", 1.0))))
+    cfg.target_rms = max(0.01, min(0.2, float(leveler_settings.get("agc_target_rms", 0.06))))
+    cfg.max_gain_db = max(6.0, min(30.0, float(leveler_settings.get("agc_max_boost_db", 18.0))))
+    cfg.expander_enabled = bool(leveler_settings.get("audio_expander_enabled", True))
+    return cfg
+
+
+def capture_worker(device_index, chunk_queue, stop_event, leveler_settings=None, health_queue=None):
     """Record chunks; save to temp file only when not silent, put path in queue."""
+    leveler = AudioLeveler(_build_leveler_config(leveler_settings))
     while not stop_event.is_set():
         try:
             chunk = sd.rec(
@@ -56,14 +69,39 @@ def capture_worker(device_index, chunk_queue, stop_event):
             )
             if stop_event.is_set():
                 break
-            if _is_silent(chunk):
+            mono = np.asarray(chunk, dtype=np.float32).reshape(-1)
+            mono, stats = leveler.process(mono)
+            if health_queue is not None:
+                try:
+                    health_queue.put_nowait({
+                        "source": "default_mic",
+                        "rms_in": float(stats.get("rms_in", 0.0)),
+                        "rms_out": float(stats.get("rms_out", 0.0)),
+                        "noise_floor": float(stats.get("noise_floor", 0.0)),
+                        "threshold": float(stats.get("threshold", 0.0)),
+                        "gain_db": float(stats.get("gain_db", 0.0)),
+                        "clip_count": int(stats.get("clip_count", 0)),
+                        "active": bool(stats.get("active", 0.0) >= 0.5),
+                    })
+                except queue.Full:
+                    pass
+            if _is_silent(mono, threshold=max(SILENCE_RMS_THRESHOLD, float(stats.get("threshold", SILENCE_RMS_THRESHOLD)) * 0.75)):
                 continue
-            rms = _rms32(chunk)
-            chunk_int16 = (np.clip(chunk, -1.0, 1.0) * 32767).astype(np.int16)
+            rms = _rms32(mono)
+            chunk_int16 = (np.clip(mono, -1.0, 1.0) * 32767).astype(np.int16)
             wavfile.write(str(CHUNK_PATH), SAMPLE_RATE, chunk_int16)
             try:
                 chunk_queue.put((str(CHUNK_PATH), rms), timeout=1.0)
-                diag("chunk_queued", path=str(CHUNK_PATH), worker="default")
+                diag(
+                    "chunk_queued",
+                    path=str(CHUNK_PATH),
+                    worker="default",
+                    rms_in=round(float(stats.get("rms_in", 0.0)), 6),
+                    rms_out=round(float(stats.get("rms_out", rms)), 6),
+                    gain_db=round(float(stats.get("gain_db", 0.0)), 2),
+                    noise_floor=round(float(stats.get("noise_floor", 0.0)), 6),
+                    clip_count=int(stats.get("clip_count", 0)),
+                )
             except queue.Full:
                 pass
         except Exception as e:

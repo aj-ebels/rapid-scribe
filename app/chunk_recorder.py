@@ -14,6 +14,7 @@ import uuid
 import numpy as np
 from scipy.io import wavfile
 from scipy.signal import resample
+from .audio_leveler import AudioLeveler, AudioLevelerConfig
 
 
 def _ensure_dir(path: str):
@@ -57,6 +58,9 @@ class ChunkRecorder:
         max_chunk_sec: float = 8.0,
         silence_duration_sec: float = 0.5,
         silence_rms_threshold: float = 0.005,
+        leveler_config: AudioLevelerConfig | None = None,
+        adaptive_silence: bool = True,
+        silence_hangover_blocks: int = 4,
     ):
         self.sample_rate = sample_rate
         self.asr_sample_rate = asr_sample_rate
@@ -66,6 +70,12 @@ class ChunkRecorder:
         self._buffer_frames = 0
         self._lock = threading.Lock()
         _ensure_dir(self.temp_dir)
+        self._silence_hangover_blocks = max(0, int(silence_hangover_blocks))
+        self._silence_hangover_left = 0
+        self._adaptive_silence = bool(adaptive_silence)
+        self._noise_floor_rms = silence_rms_threshold
+        self._noise_floor_alpha = 0.04
+        self._leveler = AudioLeveler(leveler_config or AudioLevelerConfig())
 
         self._use_silence_chunking = use_silence_chunking
         if use_silence_chunking:
@@ -90,10 +100,27 @@ class ChunkRecorder:
             self._buffer_frames += n
 
             if self._use_silence_chunking:
-                if _is_silent_block(stereo_frames, self._silence_rms_threshold):
-                    self._consecutive_silent_frames += n
+                block = np.asarray(stereo_frames, dtype=np.float32)
+                block_mono = np.mean(block, axis=1) if block.ndim == 2 else block.reshape(-1)
+                block_rms = _rms32(block_mono)
+                if self._adaptive_silence:
+                    learn_upper = max(self._silence_rms_threshold * 5.0, self._noise_floor_rms * 1.7)
+                    if block_rms <= learn_upper:
+                        a = self._noise_floor_alpha
+                        self._noise_floor_rms = (1.0 - a) * self._noise_floor_rms + a * block_rms
+                    adaptive_threshold = max(self._silence_rms_threshold, self._noise_floor_rms * 2.6)
                 else:
+                    adaptive_threshold = self._silence_rms_threshold
+                is_silent_now = _is_silent_block(stereo_frames, adaptive_threshold)
+                if is_silent_now:
+                    if self._silence_hangover_left > 0:
+                        self._silence_hangover_left -= 1
+                        is_silent_now = False
+                else:
+                    self._silence_hangover_left = self._silence_hangover_blocks
                     self._consecutive_silent_frames = 0
+                if is_silent_now:
+                    self._consecutive_silent_frames += n
 
                 if self._buffer_frames >= self._max_chunk_frames:
                     pending = self._flush_full_buffer_locked()
@@ -142,7 +169,25 @@ class ChunkRecorder:
         if pad_to_fixed and len(to_write) < self.chunk_frames:
             pad = np.zeros((self.chunk_frames - len(to_write), 2), dtype=np.float32)
             to_write = np.concatenate([to_write, pad], axis=0)
-        mono = np.mean(to_write, axis=1).astype(np.float32)
+        # Adaptive downmix: when one side dominates, preserve the stronger source.
+        if to_write.ndim == 2 and to_write.shape[1] >= 2:
+            mic = to_write[:, 0].astype(np.float32)
+            loopback = to_write[:, 1].astype(np.float32)
+            mic_rms = _rms32(mic)
+            loop_rms = _rms32(loopback)
+            eps = 1e-8
+            if mic_rms < eps and loop_rms < eps:
+                mono = 0.5 * (mic + loopback)
+            elif loop_rms < mic_rms * 0.2:
+                mono = mic
+            elif mic_rms < loop_rms * 0.2:
+                mono = loopback
+            else:
+                s = mic_rms + loop_rms + eps
+                mono = (mic * (mic_rms / s) + loopback * (loop_rms / s)).astype(np.float32)
+        else:
+            mono = np.mean(to_write, axis=1).astype(np.float32)
+        mono, level_stats = self._leveler.process(mono)
         if self.sample_rate != self.asr_sample_rate:
             num_out = int(len(mono) * self.asr_sample_rate / self.sample_rate)
             mono = resample(mono, num_out).astype(np.float32)
@@ -162,7 +207,16 @@ class ChunkRecorder:
             return
         try:
             from diagnostic import write as diag
-            diag("chunk_flushed", path=wav_path, written_frames=len(to_write), remainder_frames=remainder_frames)
+            diag(
+                "chunk_flushed",
+                path=wav_path,
+                written_frames=len(to_write),
+                remainder_frames=remainder_frames,
+                rms_in=round(float(level_stats.get("rms_in", 0.0)), 6),
+                rms_out=round(float(level_stats.get("rms_out", 0.0)), 6),
+                gain_db=round(float(level_stats.get("gain_db", 0.0)), 2),
+                noise_floor=round(float(level_stats.get("noise_floor", 0.0)), 6),
+            )
         except ImportError:
             pass
         cb = self.on_chunk_ready

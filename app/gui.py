@@ -23,6 +23,7 @@ except ImportError:
 
 from . import __version__ as app_version
 from .settings import load_settings, save_settings, AUDIO_MODE_DEFAULT, AUDIO_MODE_LOOPBACK, AUDIO_MODE_MEETING
+from .audio_leveler import AudioLevelerConfig
 from .devices import list_audio_devices, list_loopback_devices, get_default_monitor_device, get_effective_audio_device
 from .prompts import load_prompts, add_prompt, update_prompt, delete_prompt, get_prompt_by_id, TRANSCRIPT_PLACEHOLDER, MANUAL_NOTES_PLACEHOLDER
 from .transcription import (
@@ -99,6 +100,27 @@ def poll_text_queue(app):
                 app.volume_bar.set(p)
             except Exception:
                 pass
+    if getattr(app, "health_queue", None) is not None and getattr(app, "signal_health_var", None) is not None:
+        latest = None
+        try:
+            while True:
+                latest = app.health_queue.get_nowait()
+        except queue.Empty:
+            pass
+        if isinstance(latest, dict):
+            rms_out = float(latest.get("rms_out", 0.0))
+            noise_floor = float(latest.get("noise_floor", 0.0))
+            clip_count = int(latest.get("clip_count", 0))
+            gain_db = float(latest.get("gain_db", 0.0))
+            if clip_count > 0:
+                msg = f"Signal health: Clipping detected ({clip_count} samples limited)"
+            elif rms_out < max(0.003, noise_floor * 1.2):
+                msg = "Signal health: Too quiet (increase Input sensitivity or run calibration)"
+            elif gain_db > 12.0:
+                msg = "Signal health: Very low mic input (AGC boosting heavily)"
+            else:
+                msg = "Signal health: Good"
+            app.signal_health_var.set(msg)
     if app.running:
         app.root.after(280, lambda: poll_text_queue(app))
     else:
@@ -107,6 +129,8 @@ def poll_text_queue(app):
                 app.volume_bar.set(0)
             except Exception:
                 pass
+        if getattr(app, "signal_health_var", None) is not None:
+            app.signal_health_var.set("Signal health: —")
 
 
 def _level_monitor_worker(device_index, level_queue, stop_event):
@@ -275,7 +299,7 @@ def start_stop(app):
             return
         app.capture_thread = threading.Thread(
             target=capture_worker,
-            args=(dev_idx, app.chunk_queue, app.stop_event),
+            args=(dev_idx, app.chunk_queue, app.stop_event, app.settings, app.health_queue),
             daemon=True,
         )
         app.capture_threads = [app.capture_thread]
@@ -323,13 +347,20 @@ def start_stop(app):
                 sample_rate=CAPTURE_SAMPLE_RATE_MEETING,
                 frames_per_read=FRAMES_PER_READ_MEETING,
                 gain=MIXER_GAIN_MEETING,
+                mic_leveler_config=_build_leveler_config(app.settings),
             )
             def _push_level(rms):
                 try:
                     app.level_queue.put_nowait(rms)
                 except queue.Full:
                     pass
+            def _push_health(status):
+                try:
+                    app.health_queue.put_nowait(status)
+                except queue.Full:
+                    pass
             app.mixer.set_level_callback(_push_level)
+            app.mixer.set_health_callback(_push_health)
             app.mixer.start(loopback_device_index=loopback_idx, mic_device_index=mic_idx)
             app.recorder = ChunkRecorder(
                 sample_rate=app.mixer.sample_rate,
@@ -340,6 +371,8 @@ def start_stop(app):
                 min_chunk_sec=float(min_sec),
                 max_chunk_sec=float(max_sec),
                 silence_duration_sec=float(silence_sec),
+                leveler_config=_build_leveler_config(app.settings),
+                adaptive_silence=bool(app.settings.get("adaptive_audio_gating", True)),
             )
             app.mixer.set_stereo_callback(app.recorder.push_stereo)
             app.capture_thread = None
@@ -379,6 +412,17 @@ def start_stop(app):
     elif getattr(app, "_stop_ctk", None) is not None:
         app.start_btn.configure(image=app._stop_ctk)
     poll_text_queue(app)
+
+
+def _build_leveler_config(settings):
+    cfg = AudioLevelerConfig()
+    cfg.enabled = bool(settings.get("audio_auto_level", True))
+    cfg.input_sensitivity = max(0.5, min(3.0, float(settings.get("input_sensitivity", 1.0))))
+    cfg.target_rms = max(0.01, min(0.2, float(settings.get("agc_target_rms", 0.06))))
+    cfg.max_gain_db = max(6.0, min(30.0, float(settings.get("agc_max_boost_db", 18.0))))
+    cfg.expander_enabled = bool(settings.get("audio_expander_enabled", True))
+    cfg.hangover_blocks = max(2, min(20, int(settings.get("audio_hangover_blocks", 6))))
+    return cfg
 
 
 def _open_edit_prompt_dialog(parent, prompt_id, on_saved, ui_pad, ui_radius, font_family, font_sizes, colors):
@@ -645,6 +689,7 @@ def main(splash_window=None):
     app.chunk_queue = multiprocessing.Queue(maxsize=3)
     app.text_queue = multiprocessing.Queue()
     app.level_queue = queue.Queue(maxsize=32)
+    app.health_queue = queue.Queue(maxsize=64)
     app.capture_thread = None
     app.transcription_process = None
     app.capture_threads = []
@@ -1750,7 +1795,7 @@ def main(splash_window=None):
     refresh_prompts_list()
 
     # Settings tab
-    settings_card = ctk.CTkFrame(tab_settings, fg_color="transparent")
+    settings_card = ctk.CTkScrollableFrame(tab_settings, fg_color="transparent")
     settings_card.pack(fill="both", expand=True, padx=UI_PAD_LG, pady=UI_PAD)
 
     # Interface scale (backup when auto DPI makes UI too large or too small)
@@ -1881,6 +1926,41 @@ def main(splash_window=None):
         _do_check_for_updates(from_startup=True)
     root.after(3000, _run_startup_update_check)
 
+    ctk.CTkLabel(settings_card, text="Audio leveling", font=ctk.CTkFont(family=UI_FONT_FAMILY, size=F.header, weight="bold")).pack(anchor="w", pady=(0, 4))
+    ctk.CTkLabel(
+        settings_card,
+        text="Helps normalize very quiet laptop mics and very hot external mics before transcription.",
+        font=ctk.CTkFont(family=UI_FONT_FAMILY, size=F.small),
+        text_color="gray",
+        wraplength=520,
+        anchor="w",
+    ).pack(anchor="w", pady=(0, 6))
+    app.audio_auto_level_var = ctk.BooleanVar(value=bool(app.settings.get("audio_auto_level", True)))
+    app.audio_auto_level_switch = ctk.CTkSwitch(
+        settings_card,
+        text="Auto level microphone (AGC + limiter)",
+        variable=app.audio_auto_level_var,
+        onvalue=True,
+        offvalue=False,
+    )
+    app.audio_auto_level_switch.pack(anchor="w", pady=(0, 6))
+    app.input_sensitivity_var = ctk.DoubleVar(value=max(0.5, min(3.0, float(app.settings.get("input_sensitivity", 1.0)))))
+    app.input_sensitivity_label_var = ctk.StringVar(value="")
+    def _render_input_sensitivity_label():
+        app.input_sensitivity_label_var.set(f"Input sensitivity: {int(round(app.input_sensitivity_var.get() * 100))}%")
+    _render_input_sensitivity_label()
+    ctk.CTkLabel(settings_card, textvariable=app.input_sensitivity_label_var, font=ctk.CTkFont(family=UI_FONT_FAMILY, size=F.small)).pack(anchor="w")
+    app.input_sensitivity_slider = ctk.CTkSlider(settings_card, from_=0.5, to=3.0, number_of_steps=50, variable=app.input_sensitivity_var, width=280)
+    app.input_sensitivity_slider.pack(anchor="w", pady=(0, 8))
+    app.min_rms_var = ctk.DoubleVar(value=max(0.001, min(0.05, float(app.settings.get("min_rms_transcribe", 0.005)))))
+    app.min_rms_label_var = ctk.StringVar(value="")
+    def _render_min_rms_label():
+        app.min_rms_label_var.set(f"Silence guard (skip below RMS): {app.min_rms_var.get():.4f}")
+    _render_min_rms_label()
+    ctk.CTkLabel(settings_card, textvariable=app.min_rms_label_var, font=ctk.CTkFont(family=UI_FONT_FAMILY, size=F.small)).pack(anchor="w")
+    app.min_rms_slider = ctk.CTkSlider(settings_card, from_=0.001, to=0.02, number_of_steps=38, variable=app.min_rms_var, width=280)
+    app.min_rms_slider.pack(anchor="w", pady=(0, UI_PAD_LG))
+
     ctk.CTkLabel(settings_card, text="Capture mode", font=ctk.CTkFont(family=UI_FONT_FAMILY, size=F.header, weight="bold")).pack(anchor="w", pady=(0, 4))
     ctk.CTkLabel(settings_card, text="Meeting = in-process mic + loopback (PyAudioWPatch; loopback read only when data available). Loopback device below applies to Meeting mode.", font=ctk.CTkFont(family=UI_FONT_FAMILY, size=F.small), text_color="gray", wraplength=520, anchor="w").pack(anchor="w", pady=(0, UI_PAD))
     mode_values = ["Default input", "Loopback (system audio)", "Meeting (mic + loopback)"]
@@ -1895,6 +1975,94 @@ def main(splash_window=None):
     app.meeting_mic_var = ctk.StringVar(value="System Default")
     app.meeting_mic_menu = ctk.CTkOptionMenu(settings_card, values=["System Default", "Loading…"], variable=app.meeting_mic_var, width=400, font=ctk.CTkFont(family=UI_FONT_FAMILY, size=F.small), command=lambda v: _apply_settings(app))
     app.meeting_mic_menu.pack(anchor="w", pady=(0, UI_PAD_LG))
+
+    profile_row = ctk.CTkFrame(settings_card, fg_color="transparent")
+    profile_row.pack(fill="x", pady=(0, UI_PAD_LG))
+    app.calibration_status_var = ctk.StringVar(value="")
+    app.calibration_status_label = ctk.CTkLabel(profile_row, textvariable=app.calibration_status_var, font=ctk.CTkFont(family=UI_FONT_FAMILY, size=F.tiny), text_color="gray", anchor="w")
+    app.calibration_status_label.pack(side="left", padx=(0, UI_PAD))
+
+    def _profile_key_for_selected_mic():
+        v = app.meeting_mic_var.get().strip() if getattr(app, "meeting_mic_var", None) else "System Default"
+        return f"meeting:{v or 'System Default'}"
+
+    def _save_profile_from_current_controls():
+        key = _profile_key_for_selected_mic()
+        profiles = dict(app.settings.get("audio_device_profiles", {}))
+        profiles[key] = {
+            "input_sensitivity": max(0.5, min(3.0, float(app.input_sensitivity_var.get()))),
+            "min_rms_transcribe": max(0.001, min(0.05, float(app.min_rms_var.get()))),
+            "audio_auto_level": bool(app.audio_auto_level_var.get()),
+            "updated_at": datetime.now().isoformat(timespec="seconds"),
+        }
+        app.settings["audio_device_profiles"] = profiles
+
+    def _apply_saved_profile_for_selected_mic():
+        profiles = app.settings.get("audio_device_profiles", {})
+        p = profiles.get(_profile_key_for_selected_mic())
+        if not isinstance(p, dict):
+            messagebox.showinfo("No profile", "No saved profile for this microphone yet.", parent=root)
+            return
+        app.audio_auto_level_var.set(bool(p.get("audio_auto_level", app.audio_auto_level_var.get())))
+        app.input_sensitivity_var.set(max(0.5, min(3.0, float(p.get("input_sensitivity", app.input_sensitivity_var.get())))))
+        app.min_rms_var.set(max(0.001, min(0.05, float(p.get("min_rms_transcribe", app.min_rms_var.get())))))
+        _render_input_sensitivity_label()
+        _render_min_rms_label()
+        _apply_settings(app)
+        app.calibration_status_var.set("Applied saved profile.")
+
+    def _run_mic_calibration():
+        if app.running:
+            messagebox.showwarning("Stop recording first", "Stop the current recording before calibration.", parent=root)
+            return
+        dev_idx = None
+        meeting_val = app.meeting_mic_var.get()
+        if meeting_val and meeting_val != "System Default" and ":" in meeting_val:
+            try:
+                dev_idx = int(meeting_val.split(":")[0].strip())
+            except ValueError:
+                dev_idx = None
+        if not messagebox.askyesno(
+            "Mic calibration",
+            "Calibration takes about 13 seconds.\n\n1) Stay silent for 5 seconds.\n2) Speak normally for 8 seconds.\n\nStart now?",
+            parent=root,
+        ):
+            return
+        app.calibration_status_var.set("Calibrating: measuring silence (5s)...")
+
+        def worker():
+            try:
+                silence = sd.rec(int(SAMPLE_RATE * 5), samplerate=SAMPLE_RATE, channels=1, dtype=np.float32, device=dev_idx, blocking=True)
+                silence_rms = float(np.sqrt(np.mean(np.asarray(silence, dtype=np.float64) ** 2)))
+                root.after(0, lambda: app.calibration_status_var.set("Calibrating: speak normally (8s)..."))
+                speech = sd.rec(int(SAMPLE_RATE * 8), samplerate=SAMPLE_RATE, channels=1, dtype=np.float32, device=dev_idx, blocking=True)
+                speech_rms = float(np.sqrt(np.mean(np.asarray(speech, dtype=np.float64) ** 2)))
+                if speech_rms <= 1e-6:
+                    raise RuntimeError("No usable microphone signal detected.")
+                target = 0.06
+                sensitivity = max(0.5, min(3.0, target / max(speech_rms, 1e-6)))
+                min_rms = max(0.001, min(0.02, max(0.0012, silence_rms * 3.0)))
+
+                def done():
+                    app.input_sensitivity_var.set(sensitivity)
+                    app.min_rms_var.set(min_rms)
+                    app.audio_auto_level_var.set(True)
+                    _render_input_sensitivity_label()
+                    _render_min_rms_label()
+                    _save_profile_from_current_controls()
+                    _apply_settings(app)
+                    app.calibration_status_var.set(
+                        f"Calibration saved. Silence RMS={silence_rms:.4f}, Speech RMS={speech_rms:.4f}"
+                    )
+
+                root.after(0, done)
+            except Exception as e:
+                root.after(0, lambda: app.calibration_status_var.set(f"Calibration failed: {e}"))
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    ctk.CTkButton(profile_row, text="Calibrate mic", width=106, height=30, font=ctk.CTkFont(family=UI_FONT_FAMILY, size=F.small), corner_radius=UI_RADIUS, fg_color=COLORS["primary_fg"], hover_color=COLORS["primary_hover"], command=_run_mic_calibration).pack(side="right")
+    ctk.CTkButton(profile_row, text="Apply saved profile", width=130, height=30, font=ctk.CTkFont(family=UI_FONT_FAMILY, size=F.small), corner_radius=UI_RADIUS, fg_color=COLORS["secondary_fg"], hover_color=COLORS["secondary_hover"], command=_apply_saved_profile_for_selected_mic).pack(side="right", padx=(0, 8))
 
     ctk.CTkLabel(settings_card, text="Loopback device (used for Loopback mode and for Meeting mode)", font=ctk.CTkFont(family=UI_FONT_FAMILY, size=F.small, weight="bold")).pack(anchor="w", pady=(UI_PAD, 4))
     app.loopback_device_var = ctk.StringVar(value="System Default")
@@ -1997,12 +2165,30 @@ def main(splash_window=None):
                 loopback_idx = int(loopback_val.split(":")[0].strip())
             except ValueError:
                 pass
-        app.settings = {**app.settings, "audio_mode": mode, "meeting_mic_device": meeting_idx, "loopback_device_index": loopback_idx}
+        _render_input_sensitivity_label()
+        _render_min_rms_label()
+        app.settings = {
+            **app.settings,
+            "audio_mode": mode,
+            "meeting_mic_device": meeting_idx,
+            "loopback_device_index": loopback_idx,
+            "audio_auto_level": bool(app.audio_auto_level_var.get()),
+            "input_sensitivity": max(0.5, min(3.0, float(app.input_sensitivity_var.get()))),
+            "min_rms_transcribe": max(0.001, min(0.05, float(app.min_rms_var.get()))),
+            "adaptive_audio_gating": True,
+        }
+        _save_profile_from_current_controls()
         save_settings(app.settings)
+
+    app.audio_auto_level_switch.configure(command=lambda: _apply_settings(app))
+    app.input_sensitivity_slider.configure(command=lambda _v: _apply_settings(app))
+    app.min_rms_slider.configure(command=lambda _v: _apply_settings(app))
 
     # Capture device summary updated when background device enumeration completes.
     app.capture_dev_info_var = ctk.StringVar(value="Capture: … (loading…)")
     ctk.CTkLabel(main_content, textvariable=app.capture_dev_info_var, font=ctk.CTkFont(family=UI_FONT_FAMILY, size=F.small), text_color="gray").pack(anchor="w", padx=UI_PAD_LG, pady=(0, 4))
+    app.signal_health_var = ctk.StringVar(value="Signal health: —")
+    ctk.CTkLabel(main_content, textvariable=app.signal_health_var, font=ctk.CTkFont(family=UI_FONT_FAMILY, size=F.tiny), text_color="gray").pack(anchor="w", padx=UI_PAD_LG, pady=(0, 4))
     app.model_status_warning_color = COLORS["error_text"][1]
     app.model_status_label = ctk.CTkLabel(main_content, textvariable=app.model_status_var, font=ctk.CTkFont(family=UI_FONT_FAMILY, size=F.small), text_color="gray", wraplength=700)
     app.model_status_label.pack(anchor="w", padx=UI_PAD_LG, pady=(0, UI_PAD))

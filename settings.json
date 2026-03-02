@@ -1,6 +1,6 @@
 {
   "audio_mode": "meeting",
-  "meeting_mic_device": null,
+  "meeting_mic_device": 2,
   "loopback_device_index": null,
   "transcription_model": "istupakov/parakeet-tdt-0.6b-v2-onnx",
   "chunk_duration_sec": 5.0,
@@ -8,7 +8,35 @@
   "min_chunk_sec": 1.5,
   "max_chunk_sec": 8.0,
   "silence_duration_sec": 0.5,
-  "min_rms_transcribe": 0.005,
+  "min_rms_transcribe": 0.005000000000000001,
+  "audio_auto_level": true,
+  "input_sensitivity": 1.0,
+  "agc_target_rms": 0.06,
+  "agc_max_boost_db": 18.0,
+  "audio_expander_enabled": true,
+  "adaptive_audio_gating": true,
+  "audio_hangover_blocks": 6,
+  "audio_gate_hangover_chunks": 2,
+  "audio_device_profiles": {
+    "meeting:System Default": {
+      "input_sensitivity": 1.0,
+      "min_rms_transcribe": 0.005,
+      "audio_auto_level": true,
+      "updated_at": "2026-03-02T08:43:04"
+    },
+    "meeting:1: Echo Cancelling Speakerphone (2": {
+      "input_sensitivity": 1.0,
+      "min_rms_transcribe": 0.005,
+      "audio_auto_level": true,
+      "updated_at": "2026-03-02T08:43:07"
+    },
+    "meeting:2: Surface Stereo Microphones (8-": {
+      "input_sensitivity": 1.0,
+      "min_rms_transcribe": 0.005000000000000001,
+      "audio_auto_level": true,
+      "updated_at": "2026-03-02T08:45:51"
+    }
+  },
   "auto_generate_export_name": true,
   "export_prepend_date": true,
   "auto_generate_summary_when_stopping": false,
