@@ -28,9 +28,17 @@ CHUNK_PATH = Path(tempfile.gettempdir()) / "meetings_chunk.wav"
 SILENCE_RMS_THRESHOLD = 0.005
 
 
+def _rms32(chunk: np.ndarray) -> float:
+    """Fast RMS for float32 buffers."""
+    if chunk is None or chunk.size == 0:
+        return 0.0
+    buf = np.asarray(chunk, dtype=np.float32)
+    return float(np.sqrt(np.mean(buf * buf)))
+
+
 def _is_silent(chunk: np.ndarray) -> bool:
     """True if chunk has very low energy (silence or negligible noise)."""
-    rms = np.sqrt(np.mean(chunk.astype(np.float64) ** 2))
+    rms = _rms32(chunk)
     return rms < SILENCE_RMS_THRESHOLD
 
 
@@ -50,7 +58,7 @@ def capture_worker(device_index, chunk_queue, stop_event):
                 break
             if _is_silent(chunk):
                 continue
-            rms = float(np.sqrt(np.mean(chunk.astype(np.float64) ** 2)))
+            rms = _rms32(chunk)
             chunk_int16 = (np.clip(chunk, -1.0, 1.0) * 32767).astype(np.int16)
             wavfile.write(str(CHUNK_PATH), SAMPLE_RATE, chunk_int16)
             try:
@@ -117,9 +125,9 @@ def capture_worker_loopback(loopback_device_index, chunk_queue, stop_event, leve
                             block = np.frombuffer(data, dtype=np.int16)
                             buf.append(block)
                             if level_queue is not None:
-                                mono = block.reshape(-1, ch).astype(np.float64) / 32768.0
+                                mono = block.reshape(-1, ch).astype(np.float32) / 32768.0
                                 if mono.size:
-                                    rms = float(np.sqrt(np.mean(mono ** 2)))
+                                    rms = _rms32(mono)
                                     try:
                                         level_queue.put_nowait(rms)
                                     except queue.Full:
@@ -141,7 +149,7 @@ def capture_worker_loopback(loopback_device_index, chunk_queue, stop_event, leve
                     mono = np.pad(mono, (0, CHUNK_SAMPLES - len(mono)))
                 if _is_silent(mono):
                     continue
-                rms = float(np.sqrt(np.mean(mono.astype(np.float64) ** 2)))
+                rms = _rms32(mono)
                 chunk_int16 = (np.clip(mono, -1.0, 1.0) * 32767).astype(np.int16)
                 wavfile.write(str(CHUNK_PATH), SAMPLE_RATE, chunk_int16)
                 try:

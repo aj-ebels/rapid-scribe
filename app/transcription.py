@@ -5,6 +5,7 @@ import contextlib
 import io
 import queue
 import sys
+import time
 from pathlib import Path
 
 from .settings import DEFAULT_TRANSCRIPTION_MODEL, load_settings
@@ -197,19 +198,25 @@ def transcription_worker(chunk_queue, text_queue, stop_event, model_id=None):
         if not stop_event.is_set():
             text_queue.put_nowait(f"[Transcribe error] Model load failed: {e}\n")
         return
+    min_rms = MIN_RMS_TRANSCRIBE_DEFAULT
+    min_rms_refresh_every_sec = 3.0
+    last_min_rms_refresh = 0.0
     while not stop_event.is_set():
         try:
-            item = chunk_queue.get(timeout=0.5)
+            item = chunk_queue.get(timeout=1.0)
             if isinstance(item, tuple) and item[0] == "error":
                 diag("transcription_received_error", msg=item[1])
                 text_queue.put_nowait(("[Error] " + item[1] + "\n"))
                 continue
             path = item[0] if isinstance(item, tuple) and len(item) >= 1 else item
             rms = item[1] if isinstance(item, tuple) and len(item) >= 2 else None
-            min_rms = load_settings().get("min_rms_transcribe", MIN_RMS_TRANSCRIBE_DEFAULT)
-            if not isinstance(min_rms, (int, float)) or min_rms <= 0:
-                min_rms = MIN_RMS_TRANSCRIBE_DEFAULT
-            min_rms = max(0.001, min(0.05, float(min_rms)))
+            now = time.monotonic()
+            if now - last_min_rms_refresh >= min_rms_refresh_every_sec:
+                cfg_min_rms = load_settings().get("min_rms_transcribe", MIN_RMS_TRANSCRIBE_DEFAULT)
+                if not isinstance(cfg_min_rms, (int, float)) or cfg_min_rms <= 0:
+                    cfg_min_rms = MIN_RMS_TRANSCRIBE_DEFAULT
+                min_rms = max(0.001, min(0.05, float(cfg_min_rms)))
+                last_min_rms_refresh = now
             if rms is not None and rms < min_rms:
                 diag("transcription_skipped_low_rms", path=path, rms=rms, threshold=min_rms)
                 try:
@@ -217,8 +224,10 @@ def transcription_worker(chunk_queue, text_queue, stop_event, model_id=None):
                 except Exception:
                     pass
                 continue
-            diag("transcription_got_path", path=path, exists=Path(path).exists())
-            if not Path(path).exists():
+            path_obj = Path(path)
+            path_exists = path_obj.exists()
+            diag("transcription_got_path", path=path, exists=path_exists)
+            if not path_exists:
                 continue
             try:
                 result = model.recognize(path)
@@ -234,7 +243,7 @@ def transcription_worker(chunk_queue, text_queue, stop_event, model_id=None):
                     text_queue.put_nowait(f"[Transcribe error] {e}\n")
             finally:
                 try:
-                    Path(path).unlink(missing_ok=True)
+                    path_obj.unlink(missing_ok=True)
                 except Exception:
                     pass
         except queue.Empty:

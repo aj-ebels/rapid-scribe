@@ -600,7 +600,8 @@ def main(splash_window=None):
     app.running = False
     # Use multiprocessing primitives so transcription can run in a subprocess (avoids GIL contention with GUI/Teams).
     app.stop_event = multiprocessing.Event()
-    app.chunk_queue = multiprocessing.Queue(maxsize=1)
+    # Slight buffering avoids immediate chunk drops during transient CPU spikes.
+    app.chunk_queue = multiprocessing.Queue(maxsize=3)
     app.text_queue = multiprocessing.Queue()
     app.level_queue = queue.Queue(maxsize=32)
     app.capture_thread = None

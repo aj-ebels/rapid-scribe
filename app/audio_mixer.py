@@ -10,6 +10,7 @@ Output: stereo callback with Left=mic, Right=loopback at capture sample rate.
 import logging
 import threading
 import time
+from collections import deque
 import numpy as np
 from scipy.signal import resample
 
@@ -17,6 +18,8 @@ log = logging.getLogger(__name__)
 
 # Max loopback buffer: ~5 sec at 48 kHz so we stay time-aligned without unbounded growth
 MAX_LOOPBACK_BUF_SAMPLES = 240000
+STREAM_REOPEN_COOLDOWN_SEC = 2.0
+MIC_ERROR_REOPEN_THRESHOLD = 5
 
 try:
     import pyaudiowpatch as pyaudio
@@ -32,6 +35,14 @@ def _bytes_to_float_mono(data: bytes, channels: int) -> np.ndarray:
     if channels > 1:
         arr = arr.reshape(-1, channels).mean(axis=1)
     return (arr.astype(np.float32) / 32768.0)
+
+
+def _rms32(samples: np.ndarray) -> float:
+    """Fast RMS for float32 buffers."""
+    if samples is None or samples.size == 0:
+        return 0.0
+    buf = np.asarray(samples, dtype=np.float32)
+    return float(np.sqrt(np.mean(buf * buf)))
 
 
 class AudioMixer:
@@ -57,7 +68,96 @@ class AudioMixer:
         self._stereo_callback = None
         self._level_callback = None
         # Time-aligned loopback: samples at loopback sample rate, consumed per block
-        self._loopback_buffer = []
+        self._loopback_buffer = deque()
+        self._loopback_buffer_samples = 0
+        self._mic_device_index = None
+        self._loopback_device_index = None
+        self._mic_read_errors = 0
+        self._last_reopen_attempt = 0.0
+
+    def _close_stream(self, stream, name: str):
+        if stream is None:
+            return
+        try:
+            stream.stop_stream()
+        except Exception as e:
+            log.debug("%s stream stop failed: %s", name, e)
+        try:
+            stream.close()
+        except Exception as e:
+            log.debug("%s stream close failed: %s", name, e)
+
+    def _append_loopback_chunk(self, chunk: np.ndarray):
+        if chunk is None or chunk.size == 0:
+            return
+        arr = np.asarray(chunk, dtype=np.float32)
+        self._loopback_buffer.append(arr)
+        self._loopback_buffer_samples += arr.size
+        if self._loopback_buffer_samples <= MAX_LOOPBACK_BUF_SAMPLES:
+            return
+        to_drop = self._loopback_buffer_samples - MAX_LOOPBACK_BUF_SAMPLES
+        while to_drop > 0 and self._loopback_buffer:
+            head = self._loopback_buffer[0]
+            if head.size <= to_drop:
+                self._loopback_buffer.popleft()
+                self._loopback_buffer_samples -= head.size
+                to_drop -= head.size
+            else:
+                self._loopback_buffer[0] = head[to_drop:]
+                self._loopback_buffer_samples -= to_drop
+                to_drop = 0
+
+    def _consume_loopback_chunk(self, n_samples: int) -> np.ndarray:
+        if n_samples <= 0:
+            return np.array([], dtype=np.float32)
+        out = np.zeros(n_samples, dtype=np.float32)
+        written = 0
+        while written < n_samples and self._loopback_buffer:
+            head = self._loopback_buffer[0]
+            take = min(head.size, n_samples - written)
+            out[written:written + take] = head[:take]
+            written += take
+            if take >= head.size:
+                self._loopback_buffer.popleft()
+            else:
+                self._loopback_buffer[0] = head[take:]
+            self._loopback_buffer_samples -= take
+        if self._loopback_buffer_samples < 0:
+            self._loopback_buffer_samples = 0
+        return out
+
+    def _reopen_streams(self) -> bool:
+        now = time.time()
+        if now - self._last_reopen_attempt < STREAM_REOPEN_COOLDOWN_SEC:
+            return False
+        self._last_reopen_attempt = now
+        try:
+            self._close_stream(self._mic_stream, "Mic")
+            self._close_stream(self._loopback_stream, "Loopback")
+            self._mic_stream = self._p.open(
+                format=PA_FORMAT,
+                channels=self._mic_channels,
+                rate=self._mic_sample_rate,
+                frames_per_buffer=self.frames_per_read,
+                input=True,
+                input_device_index=self._mic_device_index,
+            )
+            self._loopback_stream = self._p.open(
+                format=PA_FORMAT,
+                channels=self._loopback_channels,
+                rate=self._loopback_sample_rate,
+                frames_per_buffer=self.frames_per_read,
+                input=True,
+                input_device_index=self._loopback_device_index,
+            )
+            self._loopback_buffer.clear()
+            self._loopback_buffer_samples = 0
+            self._mic_read_errors = 0
+            log.warning("Capture streams were reopened after repeated mic read failures.")
+            return True
+        except Exception as e:
+            log.exception("Failed to reopen capture streams: %s", e)
+            return False
 
     def set_stereo_callback(self, callback):
         """Set callable(stereo_frames: np.ndarray) invoked from capture thread for each block."""
@@ -80,15 +180,20 @@ class AudioMixer:
             try:
                 mic_data = self._mic_stream.read(self.frames_per_read, exception_on_overflow=False)
                 if mic_data is None or len(mic_data) == 0:
-                    time.sleep(0.001)
+                    time.sleep(0.005)
                     continue
                 mic_mono = _bytes_to_float_mono(mic_data, self._mic_channels)
+                self._mic_read_errors = 0
             except Exception as e:
-                log.exception("Mic read failed: %s", e)
-                time.sleep(0.001)
+                self._mic_read_errors += 1
+                if self._mic_read_errors == 1 or self._mic_read_errors % MIC_ERROR_REOPEN_THRESHOLD == 0:
+                    log.warning("Mic read failed (%d): %s", self._mic_read_errors, e)
+                if self._mic_read_errors >= MIC_ERROR_REOPEN_THRESHOLD:
+                    self._reopen_streams()
+                time.sleep(min(0.05 * self._mic_read_errors, 0.5))
                 continue
             n_mic = len(mic_mono)
-            mic_rms = float(np.sqrt(np.mean(mic_mono.astype(np.float64) ** 2)))
+            mic_rms = _rms32(mic_mono)
 
             # Drain all available loopback into the time-aligned buffer (non-blocking)
             try:
@@ -101,28 +206,15 @@ class AudioMixer:
                     if loopback_data is None or len(loopback_data) == 0:
                         break
                     chunk = _bytes_to_float_mono(loopback_data, self._loopback_channels)
-                    self._loopback_buffer.append(chunk)
-                    total = sum(arr.size for arr in self._loopback_buffer)
-                    if total > MAX_LOOPBACK_BUF_SAMPLES:
-                        flat = np.concatenate(self._loopback_buffer)
-                        self._loopback_buffer = [flat[-MAX_LOOPBACK_BUF_SAMPLES:]]
+                    self._append_loopback_chunk(chunk)
             except Exception as e:
-                log.exception("Loopback read failed: %s", e)
+                log.warning("Loopback read failed: %s", e)
 
             # Consume exactly the loopback samples that match this block's duration (time-aligned)
             n_loopback_needed = int(round(n_mic * self._loopback_sample_rate / self._mic_sample_rate))
             if n_loopback_needed <= 0:
                 n_loopback_needed = n_mic
-            flat = np.concatenate(self._loopback_buffer) if self._loopback_buffer else np.array([], dtype=np.float32)
-            if len(flat) >= n_loopback_needed:
-                loopback_chunk = flat[:n_loopback_needed].astype(np.float32)
-                remainder = flat[n_loopback_needed:]
-                self._loopback_buffer = [remainder] if len(remainder) > 0 else []
-            else:
-                loopback_chunk = np.zeros(n_loopback_needed, dtype=np.float32)
-                if len(flat) > 0:
-                    loopback_chunk[: len(flat)] = flat
-                self._loopback_buffer = []
+            loopback_chunk = self._consume_loopback_chunk(n_loopback_needed)
 
             # Resample loopback to output (mic) rate so we get exactly n_mic samples
             if len(loopback_chunk) != n_mic:
@@ -134,7 +226,7 @@ class AudioMixer:
                 level_cb = self._level_callback
             if level_cb is not None:
                 try:
-                    loopback_rms = float(np.sqrt(np.mean(loopback_mono.astype(np.float64) ** 2)))
+                    loopback_rms = _rms32(loopback_mono)
                     level_cb(max(mic_rms, loopback_rms))
                 except Exception as e:
                     log.debug("Level callback failed: %s", e)
@@ -188,6 +280,8 @@ class AudioMixer:
 
         self._loopback_channels = max(1, int(loopback_info.get("maxInputChannels", 1)))
         self._mic_channels = max(1, int(mic_info.get("maxInputChannels", 1)))
+        self._mic_device_index = int(default_input_index)
+        self._loopback_device_index = int(loopback_info["index"])
 
         # Open each device at its native default sample rate (avoids -9997 when dock/mic differ)
         def _device_rate(info, fallback=48000):
@@ -206,7 +300,7 @@ class AudioMixer:
                 rate=self._loopback_sample_rate,
                 frames_per_buffer=self.frames_per_read,
                 input=True,
-                input_device_index=loopback_info["index"],
+                input_device_index=self._loopback_device_index,
             )
         except OSError as e:
             self._p.terminate()
@@ -222,7 +316,7 @@ class AudioMixer:
                 rate=self._mic_sample_rate,
                 frames_per_buffer=self.frames_per_read,
                 input=True,
-                input_device_index=default_input_index,
+                input_device_index=self._mic_device_index,
             )
         except OSError as e:
             try:
@@ -250,23 +344,15 @@ class AudioMixer:
 
     def stop(self):
         self._running = False
+        self._close_stream(self._mic_stream, "Mic")
+        self._mic_stream = None
+        self._close_stream(self._loopback_stream, "Loopback")
+        self._loopback_stream = None
         if self._thread is not None:
-            self._thread.join(timeout=2.0)
+            self._thread.join(timeout=5.0)
             self._thread = None
-        if self._mic_stream is not None:
-            try:
-                self._mic_stream.stop_stream()
-                self._mic_stream.close()
-            except Exception as e:
-                log.exception("Mic stream close: %s", e)
-            self._mic_stream = None
-        if self._loopback_stream is not None:
-            try:
-                self._loopback_stream.stop_stream()
-                self._loopback_stream.close()
-            except Exception as e:
-                log.exception("Loopback stream close: %s", e)
-            self._loopback_stream = None
+        self._loopback_buffer.clear()
+        self._loopback_buffer_samples = 0
         if self._p is not None:
             try:
                 self._p.terminate()
