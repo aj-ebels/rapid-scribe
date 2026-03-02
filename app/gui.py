@@ -179,41 +179,81 @@ def update_model_status(app, models_err=None):
 
 
 def start_stop(app):
+    if getattr(app, "_stopping", False):
+        return
     if app.running:
         app.running = False
         app.stop_event.set()
-        if getattr(app, "mixer", None) is not None:
-            try:
-                app.mixer.stop()
-            except Exception:
-                pass
-            app.mixer = None
-        if getattr(app, "recorder", None) is not None:
-            try:
-                app.recorder.flush()
-            except Exception:
-                pass
-            app.recorder = None
-        for t in getattr(app, "capture_threads", []) or ([app.capture_thread] if app.capture_thread else []):
-            if t and t.is_alive():
-                t.join(timeout=CHUNK_DURATION_SEC + 2)
-        if app.transcription_process and app.transcription_process.is_alive():
-            app.transcription_process.join(timeout=10)
-            if app.transcription_process.is_alive():
-                app.transcription_process.terminate()
-                app.transcription_process.join(timeout=2)
+        app._stopping = True
+
+        mixer = getattr(app, "mixer", None)
+        recorder = getattr(app, "recorder", None)
+        capture_threads = list(getattr(app, "capture_threads", []) or ([app.capture_thread] if app.capture_thread else []))
+        trans_proc = app.transcription_process
+
+        app.mixer = None
+        app.recorder = None
+        app.capture_threads = []
+        app.capture_thread = None
+        app.transcription_process = None
+
         if getattr(app, "stop_btn", None) is not None:
-            app.start_btn.configure(state="normal")
+            app.start_btn.configure(state="disabled")
             app.stop_btn.configure(state="disabled")
         elif getattr(app, "_record_ctk", None) is not None:
             app.start_btn.configure(image=app._record_ctk)
         _clear = getattr(app, "_clear_transcript_pulse", None)
         if _clear is not None:
             _clear(app)
-        app.status_var.set("Stopped")
-        if getattr(app, "auto_generate_summary_when_stopping_var", None) and app.auto_generate_summary_when_stopping_var.get():
-            if getattr(app, "_do_ai_summary", None):
-                app.root.after(500, app._do_ai_summary)
+        app.status_var.set("Stopping...")
+
+        should_auto_summary = bool(
+            getattr(app, "auto_generate_summary_when_stopping_var", None)
+            and app.auto_generate_summary_when_stopping_var.get()
+            and getattr(app, "_do_ai_summary", None)
+        )
+
+        def _shutdown_worker():
+            if mixer is not None:
+                try:
+                    mixer.stop()
+                except Exception as e:
+                    diag("mixer_stop_failed", error=str(e))
+            if recorder is not None:
+                try:
+                    recorder.flush()
+                except Exception as e:
+                    diag("recorder_flush_failed", error=str(e))
+            for t in capture_threads:
+                try:
+                    if t and t.is_alive():
+                        t.join(timeout=2.0)
+                except Exception:
+                    pass
+            if trans_proc is not None:
+                try:
+                    if trans_proc.is_alive():
+                        trans_proc.join(timeout=1.5)
+                    if trans_proc.is_alive():
+                        trans_proc.terminate()
+                        trans_proc.join(timeout=1.0)
+                except Exception as e:
+                    diag("transcription_shutdown_failed", error=str(e))
+
+            def _finish_stop_ui():
+                app._stopping = False
+                if getattr(app, "stop_btn", None) is not None:
+                    app.start_btn.configure(state="normal")
+                    app.stop_btn.configure(state="disabled")
+                elif getattr(app, "_record_ctk", None) is not None:
+                    app.start_btn.configure(image=app._record_ctk)
+                app.status_var.set("Stopped")
+                if should_auto_summary:
+                    app.root.after(200, app._do_ai_summary)
+
+            app.root.after(0, _finish_stop_ui)
+
+        threading.Thread(target=_shutdown_worker, daemon=True).start()
         return
     app.stop_event.clear()
     if not _is_transcription_model_installed(app):
@@ -598,6 +638,7 @@ def main(splash_window=None):
     app = type("App", (), {})()
     app.root = root
     app.running = False
+    app._stopping = False
     # Use multiprocessing primitives so transcription can run in a subprocess (avoids GIL contention with GUI/Teams).
     app.stop_event = multiprocessing.Event()
     # Slight buffering avoids immediate chunk drops during transient CPU spikes.

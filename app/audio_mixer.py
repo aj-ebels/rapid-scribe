@@ -87,6 +87,14 @@ class AudioMixer:
         except Exception as e:
             log.debug("%s stream close failed: %s", name, e)
 
+    def _stop_stream_only(self, stream, name: str):
+        if stream is None:
+            return
+        try:
+            stream.stop_stream()
+        except Exception as e:
+            log.debug("%s stream stop failed: %s", name, e)
+
     def _append_loopback_chunk(self, chunk: np.ndarray):
         if chunk is None or chunk.size == 0:
             return
@@ -127,6 +135,8 @@ class AudioMixer:
         return out
 
     def _reopen_streams(self) -> bool:
+        if not self._running or self._p is None:
+            return False
         now = time.time()
         if now - self._last_reopen_attempt < STREAM_REOPEN_COOLDOWN_SEC:
             return False
@@ -177,6 +187,8 @@ class AudioMixer:
         so transcription of system audio (e.g. other participants) is usable.
         """
         while self._running:
+            if self._mic_stream is None or self._loopback_stream is None:
+                break
             try:
                 mic_data = self._mic_stream.read(self.frames_per_read, exception_on_overflow=False)
                 if mic_data is None or len(mic_data) == 0:
@@ -185,6 +197,8 @@ class AudioMixer:
                 mic_mono = _bytes_to_float_mono(mic_data, self._mic_channels)
                 self._mic_read_errors = 0
             except Exception as e:
+                if not self._running:
+                    break
                 self._mic_read_errors += 1
                 if self._mic_read_errors == 1 or self._mic_read_errors % MIC_ERROR_REOPEN_THRESHOLD == 0:
                     log.warning("Mic read failed (%d): %s", self._mic_read_errors, e)
@@ -344,15 +358,30 @@ class AudioMixer:
 
     def stop(self):
         self._running = False
-        self._close_stream(self._mic_stream, "Mic")
-        self._mic_stream = None
-        self._close_stream(self._loopback_stream, "Loopback")
-        self._loopback_stream = None
-        if self._thread is not None:
-            self._thread.join(timeout=5.0)
+        t = self._thread
+        if t is not None:
+            t.join(timeout=1.5)
+            if t.is_alive():
+                # Unblock a potentially pending read without closing handles cross-thread.
+                self._stop_stream_only(self._mic_stream, "Mic")
+                self._stop_stream_only(self._loopback_stream, "Loopback")
+                t.join(timeout=2.5)
+            if t.is_alive():
+                log.warning("Capture thread did not stop cleanly; deferring stream close to avoid backend crash.")
+            else:
+                self._close_stream(self._mic_stream, "Mic")
+                self._mic_stream = None
+                self._close_stream(self._loopback_stream, "Loopback")
+                self._loopback_stream = None
             self._thread = None
+        else:
+            self._close_stream(self._mic_stream, "Mic")
+            self._mic_stream = None
+            self._close_stream(self._loopback_stream, "Loopback")
+            self._loopback_stream = None
         self._loopback_buffer.clear()
         self._loopback_buffer_samples = 0
+        self._mic_read_errors = 0
         if self._p is not None:
             try:
                 self._p.terminate()
