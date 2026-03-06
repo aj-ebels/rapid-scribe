@@ -28,10 +28,10 @@ def _rms32(samples: np.ndarray) -> float:
 @dataclass
 class AudioLevelerConfig:
     enabled: bool = True
-    input_sensitivity: float = 1.0
-    target_rms: float = 0.045
+    input_sensitivity: float = 0.8
+    target_rms: float = 0.035
     min_gain_db: float = -12.0
-    max_gain_db: float = 12.0
+    max_gain_db: float = 9.0
     attack: float = 0.25
     release: float = 0.06
     expander_enabled: bool = True
@@ -129,7 +129,7 @@ class AudioLeveler:
                 y = y * attn
             if not active:
                 # Extra suppression during non-speech windows reduces ASR hallucinations.
-                y = y * 0.35
+                y = y * 0.25
 
         ceiling = max(0.5, min(0.999, float(self.cfg.limiter_ceiling)))
         over = np.abs(y) > ceiling

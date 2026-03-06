@@ -103,27 +103,6 @@ def poll_text_queue(app):
                 app.volume_bar.set(p)
             except Exception:
                 pass
-    if getattr(app, "health_queue", None) is not None and getattr(app, "signal_health_var", None) is not None:
-        latest = None
-        try:
-            while True:
-                latest = app.health_queue.get_nowait()
-        except queue.Empty:
-            pass
-        if isinstance(latest, dict):
-            rms_out = float(latest.get("rms_out", 0.0))
-            noise_floor = float(latest.get("noise_floor", 0.0))
-            clip_count = int(latest.get("clip_count", 0))
-            gain_db = float(latest.get("gain_db", 0.0))
-            if clip_count > 0:
-                msg = f"Signal health: Clipping detected ({clip_count} samples limited)"
-            elif rms_out < max(0.003, noise_floor * 1.2):
-                msg = "Signal health: Too quiet (increase Input sensitivity or run calibration)"
-            elif gain_db > 12.0:
-                msg = "Signal health: Very low mic input (AGC boosting heavily)"
-            else:
-                msg = "Signal health: Good"
-            app.signal_health_var.set(msg)
     if app.running:
         app.root.after(280, lambda: poll_text_queue(app))
     else:
@@ -132,8 +111,6 @@ def poll_text_queue(app):
                 app.volume_bar.set(0)
             except Exception:
                 pass
-        if getattr(app, "signal_health_var", None) is not None:
-            app.signal_health_var.set("Signal health: —")
 
 
 def _level_monitor_worker(device_index, level_queue, stop_event):
@@ -302,7 +279,7 @@ def start_stop(app):
             return
         app.capture_thread = threading.Thread(
             target=capture_worker,
-            args=(dev_idx, app.chunk_queue, app.stop_event, app.settings, app.health_queue),
+            args=(dev_idx, app.chunk_queue, app.stop_event, app.settings),
             daemon=True,
         )
         app.capture_threads = [app.capture_thread]
@@ -357,13 +334,7 @@ def start_stop(app):
                     app.level_queue.put_nowait(rms)
                 except queue.Full:
                     pass
-            def _push_health(status):
-                try:
-                    app.health_queue.put_nowait(status)
-                except queue.Full:
-                    pass
             app.mixer.set_level_callback(_push_level)
-            app.mixer.set_health_callback(_push_health)
             app.mixer.start(loopback_device_index=loopback_idx, mic_device_index=mic_idx)
             app.recorder = ChunkRecorder(
                 sample_rate=app.mixer.sample_rate,
@@ -420,9 +391,9 @@ def start_stop(app):
 def _build_leveler_config(settings):
     cfg = AudioLevelerConfig()
     cfg.enabled = bool(settings.get("audio_auto_level", True))
-    cfg.input_sensitivity = max(0.5, min(3.0, float(settings.get("input_sensitivity", 1.0))))
-    cfg.target_rms = max(0.01, min(0.2, float(settings.get("agc_target_rms", 0.045))))
-    cfg.max_gain_db = max(6.0, min(30.0, float(settings.get("agc_max_boost_db", 12.0))))
+    cfg.input_sensitivity = max(0.5, min(3.0, float(settings.get("input_sensitivity", 0.8))))
+    cfg.target_rms = max(0.01, min(0.2, float(settings.get("agc_target_rms", 0.035))))
+    cfg.max_gain_db = max(6.0, min(30.0, float(settings.get("agc_max_boost_db", 9.0))))
     cfg.expander_enabled = bool(settings.get("audio_expander_enabled", True))
     cfg.hangover_blocks = max(2, min(20, int(settings.get("audio_hangover_blocks", 6))))
     return cfg
@@ -718,7 +689,6 @@ def main(splash_window=None):
     app.chunk_queue = multiprocessing.Queue(maxsize=3)
     app.text_queue = multiprocessing.Queue()
     app.level_queue = queue.Queue(maxsize=32)
-    app.health_queue = queue.Queue(maxsize=64)
     app.capture_thread = None
     app.transcription_process = None
     app.capture_threads = []
@@ -2266,14 +2236,10 @@ def main(splash_window=None):
     app.input_sensitivity_slider.configure(command=lambda _v: _apply_settings(app))
     app.min_rms_slider.configure(command=lambda _v: _apply_settings(app))
 
-    # Capture device summary updated when background device enumeration completes.
+    # Keep vars for internal status updates, but hide footer lines in the Transcript page UI.
     app.capture_dev_info_var = ctk.StringVar(value="Capture: … (loading…)")
-    ctk.CTkLabel(main_content, textvariable=app.capture_dev_info_var, font=ctk.CTkFont(family=UI_FONT_FAMILY, size=F.small), text_color="gray").pack(anchor="w", padx=UI_PAD_LG, pady=(0, 4))
-    app.signal_health_var = ctk.StringVar(value="Signal health: —")
-    ctk.CTkLabel(main_content, textvariable=app.signal_health_var, font=ctk.CTkFont(family=UI_FONT_FAMILY, size=F.tiny), text_color="gray").pack(anchor="w", padx=UI_PAD_LG, pady=(0, 4))
     app.model_status_warning_color = COLORS["error_text"][1]
-    app.model_status_label = ctk.CTkLabel(main_content, textvariable=app.model_status_var, font=ctk.CTkFont(family=UI_FONT_FAMILY, size=F.small), text_color="gray", wraplength=700)
-    app.model_status_label.pack(anchor="w", padx=UI_PAD_LG, pady=(0, UI_PAD))
+    app.model_status_label = None
     # Model status and Record button are updated by _startup_check_done after background check (and optional load).
 
     root.protocol("WM_DELETE_WINDOW", lambda: (app.stop_event.set(), root.destroy()))

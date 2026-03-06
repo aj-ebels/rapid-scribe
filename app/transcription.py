@@ -202,7 +202,7 @@ def transcription_worker(chunk_queue, text_queue, stop_event, model_id=None):
     min_rms_refresh_every_sec = 3.0
     last_min_rms_refresh = 0.0
     adaptive_gate = True
-    noise_floor = max(0.0008, min_rms * 0.5)
+    noise_floor = max(0.0025, min_rms)
     gate_hangover_chunks = 0
     hangover_left = 0
     while not stop_event.is_set():
@@ -229,7 +229,7 @@ def transcription_worker(chunk_queue, text_queue, stop_event, model_id=None):
                 learn_upper = max(min_rms * 5.0, noise_floor * 1.8)
                 if rms <= learn_upper:
                     noise_floor = 0.95 * noise_floor + 0.05 * float(rms)
-                effective_min_rms = max(min_rms, noise_floor * 3.8)
+                effective_min_rms = max(min_rms, noise_floor * 4.5)
             if rms is not None and rms < effective_min_rms:
                 if hangover_left > 0:
                     hangover_left -= 1

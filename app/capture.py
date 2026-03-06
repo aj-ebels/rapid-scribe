@@ -47,9 +47,9 @@ def _build_leveler_config(leveler_settings: dict | None) -> AudioLevelerConfig:
     leveler_settings = leveler_settings or {}
     cfg = AudioLevelerConfig()
     cfg.enabled = bool(leveler_settings.get("audio_auto_level", True))
-    cfg.input_sensitivity = max(0.5, min(3.0, float(leveler_settings.get("input_sensitivity", 1.0))))
-    cfg.target_rms = max(0.01, min(0.2, float(leveler_settings.get("agc_target_rms", 0.045))))
-    cfg.max_gain_db = max(6.0, min(30.0, float(leveler_settings.get("agc_max_boost_db", 12.0))))
+    cfg.input_sensitivity = max(0.5, min(3.0, float(leveler_settings.get("input_sensitivity", 0.8))))
+    cfg.target_rms = max(0.01, min(0.2, float(leveler_settings.get("agc_target_rms", 0.035))))
+    cfg.max_gain_db = max(6.0, min(30.0, float(leveler_settings.get("agc_max_boost_db", 9.0))))
     cfg.expander_enabled = bool(leveler_settings.get("audio_expander_enabled", True))
     return cfg
 
