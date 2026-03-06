@@ -453,24 +453,12 @@ def _open_edit_prompt_dialog(parent, prompt_id, on_saved, ui_pad, ui_radius, fon
 
 
 def _get_dpi_scale():
-    """Return scale factor for high-DPI displays."""
-    scale = 1.0
-    try:
-        import tkinter as _tk
-        _root = _tk.Tk()
-        _root.withdraw()
-        _root.update_idletasks()
-        dpi = _root.winfo_fpixels("1i")
-        if dpi and dpi > 0:
-            scale = max(1.0, min(2.0, dpi / 96.0))
-        if scale <= 1.0 and sys.platform == "win32":
-            h = _root.winfo_screenheight()
-            if h >= 900:
-                scale = 1.85
-        _root.destroy()
-    except Exception:
-        pass
-    return scale
+    """Return normalized auto scale.
+
+    Keep auto mode fixed to 100% so fresh installs look consistent across
+    machines. Users can still pick a custom scale in Settings.
+    """
+    return 1.0
 
 
 def main(splash_window=None):
