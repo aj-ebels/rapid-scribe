@@ -44,9 +44,9 @@ def load_settings(default_model=None):
         "transcription_model": model,
         "chunk_duration_sec": 5.0,
         "use_silence_chunking": True,
-        "min_chunk_sec": 1.5,
-        "max_chunk_sec": 8.0,
-        "silence_duration_sec": 0.5,
+        "min_chunk_sec": 1.0,
+        "max_chunk_sec": 6.0,
+        "silence_duration_sec": 0.35,
         "min_rms_transcribe": 0.01,
         "audio_auto_level": True,
         "input_sensitivity": 0.8,
@@ -83,7 +83,7 @@ def load_settings(default_model=None):
             if "max_chunk_sec" in data and isinstance(data["max_chunk_sec"], (int, float)):
                 out["max_chunk_sec"] = max(3.0, min(60.0, float(data["max_chunk_sec"])))
             if "silence_duration_sec" in data and isinstance(data["silence_duration_sec"], (int, float)):
-                out["silence_duration_sec"] = max(0.2, min(2.0, float(data["silence_duration_sec"])))
+                out["silence_duration_sec"] = max(0.15, min(2.0, float(data["silence_duration_sec"])))
             if "min_rms_transcribe" in data and isinstance(data["min_rms_transcribe"], (int, float)):
                 out["min_rms_transcribe"] = max(0.001, min(0.05, float(data["min_rms_transcribe"])))
             if "audio_auto_level" in data:

@@ -69,21 +69,100 @@ if sys.platform == "win32":
     from .chunk_recorder import ChunkRecorder
 
 
+_PARAGRAPH_GAP_SEC = 6.0  # silence gap (seconds between emissions) that triggers a new paragraph
+
+
+def _discard_pending_chunks(chunk_queue):
+    """Drain chunk_queue and delete the associated temp WAV files.
+
+    Called when recording stops so that unprocessed audio captured just before Stop
+    is not transcribed into the next recording session.
+    """
+    from pathlib import Path as _Path
+    import queue as _queue
+    discarded = 0
+    while True:
+        try:
+            item = chunk_queue.get_nowait()
+            # item is (wav_path, rms) or ("error", msg) — delete the file if it's a real path.
+            if isinstance(item, tuple) and len(item) >= 1 and isinstance(item[0], str) and item[0] != "error":
+                try:
+                    _Path(item[0]).unlink(missing_ok=True)
+                except Exception:
+                    pass
+            discarded += 1
+        except _queue.Empty:
+            break
+    if discarded:
+        diag("chunk_queue_drained", discarded=discarded)
+
+
+def _discard_pending_text(text_queue):
+    """Drain text_queue, discarding any transcription results from the previous session."""
+    import queue as _queue
+    discarded = 0
+    while True:
+        try:
+            text_queue.get_nowait()
+            discarded += 1
+        except _queue.Empty:
+            break
+    if discarded:
+        diag("text_queue_drained", discarded=discarded)
+
+
 def poll_text_queue(app):
     """Called periodically from main thread to append new transcript text.
-    Drains all available lines then does a single insert/scroll (batched update)
-    to reduce UI work when multiple chunks complete in one poll tick."""
-    lines = []
+    Drains all available items then does a single insert/scroll.
+
+    Items from the transcription worker are (text, gap_seconds) tuples.
+    Error/status strings are plain str ending with \\n and are passed through as-is.
+    Transcription chunks are joined intelligently: space-separated for continuous speech,
+    paragraph-separated (blank line) after long pauses or at the start of a new recording.
+    """
+    items = []
     try:
         while True:
-            line = app.text_queue.get_nowait()
-            lines.append(line)
+            items.append(app.text_queue.get_nowait())
     except queue.Empty:
         pass
-    if lines:
-        app.log.insert("end", "".join(lines))
-        app.log.see("end")
-    if lines and getattr(app, "schedule_save_meeting", None) is not None:
+
+    if items:
+        # _transcript_tail tracks the last character written so we know what prefix to use.
+        # Initialise to '\n' so the very first chunk never gets a leading space.
+        tail = getattr(app, "_transcript_tail", "\n")
+        parts = []
+        for item in items:
+            if isinstance(item, tuple) and len(item) == 2:
+                text, gap = item
+                if not text:
+                    continue
+                # Decide prefix based on the current log tail and the gap since last emission.
+                if not tail or tail in ("\n", " "):
+                    # Log is empty or already ends with whitespace — no prefix needed.
+                    prefix = ""
+                elif gap >= _PARAGRAPH_GAP_SEC:
+                    # Long pause after existing content — start a new paragraph.
+                    prefix = "\n\n"
+                else:
+                    # Continuing speech — space-join onto existing content.
+                    prefix = " "
+                segment = prefix + text
+            else:
+                # Plain string (error / status message) — insert as-is.
+                segment = str(item)
+
+            parts.append(segment)
+            if segment:
+                tail = segment[-1]
+
+        if parts:
+            combined = "".join(parts)
+            app.log.insert("end", combined)
+            app.log.see("end")
+            app._transcript_tail = tail
+
+    if items and getattr(app, "schedule_save_meeting", None) is not None:
         app.schedule_save_meeting()
     # Drain live level updates and show latest
     if getattr(app, "level_queue", None) is not None:
@@ -104,7 +183,7 @@ def poll_text_queue(app):
             except Exception:
                 pass
     if app.running:
-        app.root.after(280, lambda: poll_text_queue(app))
+        app.root.after(50, lambda: poll_text_queue(app))
     else:
         if getattr(app, "volume_bar", None) is not None:
             try:
@@ -193,13 +272,13 @@ def start_stop(app):
         mixer = getattr(app, "mixer", None)
         recorder = getattr(app, "recorder", None)
         capture_threads = list(getattr(app, "capture_threads", []) or ([app.capture_thread] if app.capture_thread else []))
-        trans_proc = app.transcription_process
 
         app.mixer = None
         app.recorder = None
         app.capture_threads = []
         app.capture_thread = None
-        app.transcription_process = None
+        # Intentionally do NOT clear app.transcription_process — it stays alive between
+        # recordings so the model stays loaded (no cold-start on next Record).
 
         if getattr(app, "stop_btn", None) is not None:
             app.start_btn.configure(state="disabled")
@@ -234,15 +313,11 @@ def start_stop(app):
                         t.join(timeout=2.0)
                 except Exception:
                     pass
-            if trans_proc is not None:
-                try:
-                    if trans_proc.is_alive():
-                        trans_proc.join(timeout=1.5)
-                    if trans_proc.is_alive():
-                        trans_proc.terminate()
-                        trans_proc.join(timeout=1.0)
-                except Exception as e:
-                    diag("transcription_shutdown_failed", error=str(e))
+            # Discard any audio chunks that were queued but not yet transcribed.
+            # We wait until capture threads have exited so no new chunks can arrive after we drain.
+            _discard_pending_chunks(app.chunk_queue)
+            # Transcription subprocess is intentionally kept alive between recordings (model stays loaded).
+            # It will idle on an empty queue. transcription_stop_event signals final shutdown.
 
             def _finish_stop_ui():
                 app._stopping = False
@@ -260,6 +335,15 @@ def start_stop(app):
         threading.Thread(target=_shutdown_worker, daemon=True).start()
         return
     app.stop_event.clear()
+    # Discard any stale transcription results that the subprocess produced from chunks that
+    # were already in-flight when the previous session stopped.
+    _discard_pending_text(app.text_queue)
+    # Sync _transcript_tail with the actual log content so the first new chunk gets the right prefix.
+    try:
+        log_content = app.log.get("1.0", "end-1c")  # exclude the trailing newline tkinter always appends
+        app._transcript_tail = log_content[-1] if log_content else ""
+    except Exception:
+        app._transcript_tail = ""
     if not _is_transcription_model_installed(app):
         messagebox.showinfo(
             "Transcription model required",
@@ -310,14 +394,14 @@ def start_stop(app):
         try:
             use_silence = app.settings.get("use_silence_chunking", True)
             min_sec = app.settings.get("min_chunk_sec", 1.5)
-            max_sec = app.settings.get("max_chunk_sec", 8.0)
-            silence_sec = app.settings.get("silence_duration_sec", 0.5)
+            max_sec = app.settings.get("max_chunk_sec", 6.0)
+            silence_sec = app.settings.get("silence_duration_sec", 0.35)
             if not isinstance(min_sec, (int, float)) or min_sec < 0.5 or min_sec > 10:
-                min_sec = 1.5
-            if not isinstance(max_sec, (int, float)) or max_sec < 3 or max_sec > 60:
-                max_sec = 8.0
-            if not isinstance(silence_sec, (int, float)) or silence_sec < 0.2 or silence_sec > 2:
-                silence_sec = 0.5
+                min_sec = 1.0
+            if not isinstance(max_sec, (int, float)) or max_sec < 1 or max_sec > 60:
+                max_sec = 6.0
+            if not isinstance(silence_sec, (int, float)) or silence_sec < 0.15 or silence_sec > 2:
+                silence_sec = 0.35
             if min_sec > max_sec:
                 max_sec = min_sec
             chunk_sec = app.settings.get("chunk_duration_sec", 5.0)  # fallback for fixed mode
@@ -373,9 +457,13 @@ def start_stop(app):
     if app.capture_thread:
         app.capture_thread.start()
     model_id = STANDARD_TRANSCRIPTION_MODEL
-    app.transcription_process = start_transcription_subprocess(
-        app.chunk_queue, app.text_queue, app.stop_event, model_id
-    )
+    proc = getattr(app, "transcription_process", None)
+    if proc is None or not proc.is_alive():
+        # Not pre-warmed (model not installed at startup, or subprocess died) — start now.
+        app.transcription_stop_event.clear()
+        app.transcription_process = start_transcription_subprocess(
+            app.chunk_queue, app.text_queue, app.transcription_stop_event, model_id
+        )
     app.running = True
     _start = getattr(app, "_start_transcript_pulse", None)
     if _start is not None:
@@ -673,6 +761,10 @@ def main(splash_window=None):
     app._stopping = False
     # Use multiprocessing primitives so transcription can run in a subprocess (avoids GIL contention with GUI/Teams).
     app.stop_event = multiprocessing.Event()
+    # Separate event for the transcription subprocess — only set when the app closes, NOT on Stop.
+    # This keeps the subprocess (and its loaded model) alive between recordings so there's no
+    # cold-start delay when the user clicks Record a second time.
+    app.transcription_stop_event = multiprocessing.Event()
     # Slight buffering avoids immediate chunk drops during transient CPU spikes.
     app.chunk_queue = multiprocessing.Queue(maxsize=3)
     app.text_queue = multiprocessing.Queue()
@@ -680,7 +772,69 @@ def main(splash_window=None):
     app.capture_thread = None
     app.transcription_process = None
     app.capture_threads = []
-    app.settings = load_settings()
+    app.settings = _initial_settings  # already loaded above for scale detection — avoid reading disk twice
+    # Kick off the HF model cache scan subprocess immediately so it runs in parallel with widget
+    # construction below. The result is polled after _poll_startup_queue is defined (~line 964).
+    app._startup_queue = multiprocessing.Queue()
+    app._startup_process = multiprocessing.Process(
+        target=run_startup_check_worker,
+        args=(app._startup_queue,),
+        daemon=True,
+    )
+    app._startup_process.start()
+    # Start device enumeration thread early too — runs in parallel with widget construction so
+    # the Settings dropdowns are populated (or nearly so) by the time the user can see them.
+    app._devices_result = None
+    app._devices_poll_id = None
+    def _load_devices_worker():
+        """Run in background thread; set app._devices_result when done so main thread can update UI."""
+        try:
+            input_devices, _ = list_audio_devices()
+            loopback_devices, lb_err = list_loopback_devices()
+            dev_idx, dev_err = get_default_monitor_device()
+            mode = app.settings.get("audio_mode") or AUDIO_MODE_DEFAULT
+            mode_label = {"default": "Default input", "loopback": "Loopback", "meeting": "Meeting (mic + loopback)", "meeting_ffmpeg": "Meeting (mic + loopback)"}.get(mode, "Default input")
+            if dev_err:
+                dev_info = f"Capture: {mode_label} — {dev_err}"
+            elif dev_idx is not None and input_devices:
+                name = next((d["name"] for d in input_devices if d["index"] == dev_idx), f"Device {dev_idx}")
+                dev_info = f"Capture: {mode_label} · Input: {name}"
+            else:
+                dev_info = f"Capture: {mode_label}"
+            input_options = ["System Default"] + [f"{d['index']}: {d['name']}" for d in input_devices if d.get("max_input_channels", 0) > 0]
+            loopback_options = ["System Default"] + [f"{d['index']}: {d['name']}" for d in loopback_devices]
+            if lb_err:
+                loopback_options = ["System Default", f"(Error: {lb_err})"]
+            meeting_mic_value = "System Default"
+            meeting_mic_idx = app.settings.get("meeting_mic_device")
+            if meeting_mic_idx is not None:
+                for d in input_devices:
+                    if d["index"] == meeting_mic_idx:
+                        meeting_mic_value = f"{d['index']}: {d['name']}"
+                        break
+            loopback_value = "System Default"
+            lb_idx = app.settings.get("loopback_device_index")
+            if lb_idx is not None and loopback_devices:
+                for d in loopback_devices:
+                    if d["index"] == lb_idx:
+                        loopback_value = f"{d['index']}: {d['name']}"
+                        break
+            app._devices_result = {
+                "input_options": input_options,
+                "loopback_options": loopback_options,
+                "dev_info": dev_info,
+                "meeting_mic_value": meeting_mic_value,
+                "loopback_value": loopback_value,
+            }
+        except Exception:
+            app._devices_result = {
+                "input_options": ["System Default"],
+                "loopback_options": ["System Default"],
+                "dev_info": "Capture: — (device list failed)",
+                "meeting_mic_value": "System Default",
+                "loopback_value": "System Default",
+            }
+    threading.Thread(target=_load_devices_worker, daemon=True).start()
     # Background save: main thread never blocks on file I/O; worker writes a copy of meetings.
     app._save_meetings_queue = queue.Queue()
     def _save_meetings_worker():
@@ -817,7 +971,7 @@ def main(splash_window=None):
     header.pack_propagate(False)
     app.status_var = ctk.StringVar(value="Checking…")
     ctk.CTkLabel(header, textvariable=app.status_var, font=ctk.CTkFont(family=UI_FONT_FAMILY, size=F.header, weight="bold")).pack(side="left", padx=UI_PAD_LG, pady=UI_PAD)
-    app.model_status_var = ctk.StringVar(value="")
+    app.model_status_var = ctk.StringVar(value="Transcription model: Checking…")
     # Live input volume indicator (small bar, right of status)
     vol_frame = ctk.CTkFrame(header, fg_color="transparent")
     vol_frame.pack(side="right", padx=(0, UI_PAD), pady=UI_PAD)
@@ -938,6 +1092,18 @@ def main(splash_window=None):
     def _startup_check_done(models_err):
         """Called on main thread after background startup check; refreshes Model tab and enables Record when ready."""
         refresh_models_tab(models_err=models_err)
+        # Pre-warm the transcription subprocess now so the model is loaded before the user clicks Record.
+        # Uses transcription_stop_event (not stop_event) so it survives across recordings.
+        models, _err = models_err
+        installed_ids = [m["repo_id"] for m in models] if models else []
+        if STANDARD_TRANSCRIPTION_MODEL in installed_ids:
+            proc = getattr(app, "transcription_process", None)
+            if proc is None or not proc.is_alive():
+                app.transcription_stop_event.clear()
+                app.transcription_process = start_transcription_subprocess(
+                    app.chunk_queue, app.text_queue, app.transcription_stop_event,
+                    STANDARD_TRANSCRIPTION_MODEL,
+                )
 
     def _poll_startup_queue():
         """Poll for startup check result from subprocess (avoids GIL contention; main thread stays responsive)."""
@@ -951,16 +1117,8 @@ def main(splash_window=None):
         except queue.Empty:
             app.root.after(100, _poll_startup_queue)
 
-    # Run cache scan in a subprocess so the main process never blocks on it (no GIL contention).
-    # Main thread polls the result queue with root.after(); Record button stays disabled until we get the result.
-    app.model_status_var.set("Transcription model: Checking…")
-    app._startup_queue = multiprocessing.Queue()
-    app._startup_process = multiprocessing.Process(
-        target=run_startup_check_worker,
-        args=(app._startup_queue,),
-        daemon=True,
-    )
-    app._startup_process.start()
+    # Subprocess was started early (before widget construction) to run in parallel.
+    # Begin polling now that _poll_startup_queue and refresh_models_tab are defined.
     app.root.after(100, _poll_startup_queue)
 
     # Transcript tab — meeting name and dates at top, then three equal-width columns: Manual Notes | Transcript | AI Summary
@@ -1086,6 +1244,7 @@ def main(splash_window=None):
     def clear_transcript():
         if messagebox.askyesno("Clear transcript", "Clear the entire transcript? This cannot be undone.", parent=root):
             app.log.delete("1.0", "end")
+            app._transcript_tail = ""  # log is now empty; no prefix before next transcribed chunk
     ctk.CTkButton(card_header, text="Copy transcript", font=ctk.CTkFont(family=UI_FONT_FAMILY, size=F.small), width=100, height=28, corner_radius=UI_RADIUS, fg_color=COLORS["secondary_fg"], hover_color=COLORS["secondary_hover"], command=copy_transcript).pack(side="left", padx=(UI_PAD, 0), pady=4)
     ctk.CTkButton(card_header, text="Clear", font=ctk.CTkFont(family=UI_FONT_FAMILY, size=F.small), width=50, height=28, corner_radius=UI_RADIUS, fg_color=COLORS["secondary_fg"], hover_color=COLORS["secondary_hover"], command=clear_transcript).pack(side="right", padx=UI_PAD, pady=4)
     transcript_sub = ctk.CTkFrame(card, fg_color="transparent")
@@ -1668,7 +1827,9 @@ def main(splash_window=None):
             app.manual_notes.delete("1.0", "end")
             app.manual_notes.insert("1.0", meeting.get("manual_notes") or "")
             app.log.delete("1.0", "end")
-            app.log.insert("1.0", meeting.get("transcript") or "")
+            transcript_content = meeting.get("transcript") or ""
+            app.log.insert("1.0", transcript_content)
+            app._transcript_tail = transcript_content[-1] if transcript_content else ""
             app.summary_text.delete("1.0", "end")
             app.summary_text.insert("1.0", meeting.get("ai_summary") or "")
             app._update_generate_name_btn_state()
@@ -2128,64 +2289,14 @@ def main(splash_window=None):
                 pass
             app._devices_poll_id = None
 
-    def _load_devices_worker():
-        """Run in background thread; set app._devices_result when done so main thread can update UI."""
-        try:
-            input_devices, _ = list_audio_devices()
-            loopback_devices, lb_err = list_loopback_devices()
-            dev_idx, dev_err = get_default_monitor_device()
-            mode = app.settings.get("audio_mode") or AUDIO_MODE_DEFAULT
-            mode_label = {"default": "Default input", "loopback": "Loopback", "meeting": "Meeting (mic + loopback)", "meeting_ffmpeg": "Meeting (mic + loopback)"}.get(mode, "Default input")
-            if dev_err:
-                dev_info = f"Capture: {mode_label} — {dev_err}"
-            elif dev_idx is not None and input_devices:
-                name = next((d["name"] for d in input_devices if d["index"] == dev_idx), f"Device {dev_idx}")
-                dev_info = f"Capture: {mode_label} · Input: {name}"
-            else:
-                dev_info = f"Capture: {mode_label}"
-            input_options = ["System Default"] + [f"{d['index']}: {d['name']}" for d in input_devices if d.get("max_input_channels", 0) > 0]
-            loopback_options = ["System Default"] + [f"{d['index']}: {d['name']}" for d in loopback_devices]
-            if lb_err:
-                loopback_options = ["System Default", f"(Error: {lb_err})"]
-            meeting_mic_value = "System Default"
-            meeting_mic_idx = app.settings.get("meeting_mic_device")
-            if meeting_mic_idx is not None:
-                for d in input_devices:
-                    if d["index"] == meeting_mic_idx:
-                        meeting_mic_value = f"{d['index']}: {d['name']}"
-                        break
-            loopback_value = "System Default"
-            lb_idx = app.settings.get("loopback_device_index")
-            if lb_idx is not None and loopback_devices:
-                for d in loopback_devices:
-                    if d["index"] == lb_idx:
-                        loopback_value = f"{d['index']}: {d['name']}"
-                        break
-            app._devices_result = {
-                "input_options": input_options,
-                "loopback_options": loopback_options,
-                "dev_info": dev_info,
-                "meeting_mic_value": meeting_mic_value,
-                "loopback_value": loopback_value,
-            }
-        except Exception:
-            app._devices_result = {
-                "input_options": ["System Default"],
-                "loopback_options": ["System Default"],
-                "dev_info": "Capture: — (device list failed)",
-                "meeting_mic_value": "System Default",
-                "loopback_value": "System Default",
-            }
-
     def _poll_devices_ready():
         if getattr(app, "_devices_result", None) is not None:
             _populate_devices_ui()
             return
         app._devices_poll_id = root.after(100, _poll_devices_ready)
 
-    app._devices_result = None
-    app._devices_poll_id = None
-    threading.Thread(target=_load_devices_worker, daemon=True).start()
+    # Thread was started early (before widget construction). Begin polling now that
+    # _populate_devices_ui and the Settings widgets it references are fully defined.
     app._devices_poll_id = root.after(100, _poll_devices_ready)
 
     def _apply_settings(app):

@@ -3,6 +3,8 @@ Transcription: Parakeet/ONNX ASR model loading, cache, installed-models list, tr
 """
 import contextlib
 import io
+import json
+import os
 import queue
 import sys
 import time
@@ -108,6 +110,7 @@ def download_transcription_model(model_id):
             onnx_asr.load_model(model_id, quantization="int8")
         # Don't cache in our global; we only needed to trigger the download. Next get_transcription_model() will load from cache.
         clear_transcription_model_cache()
+        _invalidate_model_scan_cache()
         return True, None
     except Exception as e:
         return False, str(e)
@@ -122,8 +125,42 @@ def run_startup_check_worker(result_queue):
         result_queue.put(([], str(e)))
 
 
+def _get_model_scan_cache_path():
+    """Path to the model scan result cache file (avoids expensive scan_cache_dir on repeat startups)."""
+    if os.name == "nt":
+        base = os.environ.get("APPDATA", str(Path.home() / "AppData" / "Roaming"))
+    elif sys.platform == "darwin":
+        base = str(Path.home() / "Library" / "Application Support")
+    else:
+        base = os.environ.get("XDG_CONFIG_HOME", str(Path.home() / ".config"))
+    return Path(base) / "Meetings" / "model_scan_cache.json"
+
+
+def _invalidate_model_scan_cache():
+    """Delete the cached scan result so the next startup re-scans HF cache."""
+    try:
+        _get_model_scan_cache_path().unlink(missing_ok=True)
+    except Exception:
+        pass
+
+
 def list_installed_transcription_models():
     """List cached Hugging Face models that look like ASR/transcription. Returns (list, error)."""
+    # Fast path: return cached result if the HF hub directory hasn't changed since last scan.
+    cache_path = _get_model_scan_cache_path()
+    if cache_path.exists():
+        try:
+            with open(cache_path, "r", encoding="utf-8") as f:
+                cached = json.load(f)
+            hf_dir = Path(cached.get("hf_cache_dir", ""))
+            cached_mtime = cached.get("hf_dir_mtime")
+            if hf_dir.is_dir() and cached_mtime is not None:
+                if abs(hf_dir.stat().st_mtime - cached_mtime) < 1.0:
+                    return cached["models"], None
+        except Exception:
+            pass
+
+    # Slow path: run the full Hugging Face cache scan.
     try:
         from huggingface_hub import scan_cache_dir
     except ImportError:
@@ -146,6 +183,25 @@ def list_installed_transcription_models():
             "revision_hashes": [r.commit_hash for r in repo.revisions],
         })
     out.sort(key=lambda x: x["repo_id"])
+
+    # Write result to cache so the next startup can skip the scan.
+    try:
+        from huggingface_hub.constants import HF_HUB_CACHE
+        hf_dir = Path(HF_HUB_CACHE)
+    except Exception:
+        hf_dir = Path.home() / ".cache" / "huggingface" / "hub"
+    if hf_dir.is_dir():
+        try:
+            cache_path.parent.mkdir(parents=True, exist_ok=True)
+            with open(cache_path, "w", encoding="utf-8") as f:
+                json.dump({
+                    "hf_cache_dir": str(hf_dir),
+                    "hf_dir_mtime": hf_dir.stat().st_mtime,
+                    "models": out,
+                }, f, indent=2)
+        except Exception:
+            pass
+
     return out, None
 
 
@@ -161,6 +217,7 @@ def uninstall_transcription_model(repo_id, revision_hashes):
         cache = scan_cache_dir()
         strategy = cache.delete_revisions(*revision_hashes)
         strategy.execute()
+        _invalidate_model_scan_cache()
         return True, None
     except Exception as e:
         return False, str(e)
@@ -205,6 +262,7 @@ def transcription_worker(chunk_queue, text_queue, stop_event, model_id=None):
     noise_floor = max(0.0025, min_rms)
     gate_hangover_chunks = 0
     hangover_left = 0
+    last_emit_time = 0.0  # monotonic time of the last successful text emission
     while not stop_event.is_set():
         try:
             item = chunk_queue.get(timeout=1.0)
@@ -263,8 +321,12 @@ def transcription_worker(chunk_queue, text_queue, stop_event, model_id=None):
                 result = model.recognize(path)
                 text = result if isinstance(result, str) else getattr(result, "text", str(result))
                 if text and isinstance(text, str) and text.strip():
-                    text_queue.put_nowait(text.strip() + "\n")
-                    diag("transcription_ok", path=path, text_len=len(text.strip()))
+                    now = time.monotonic()
+                    gap = (now - last_emit_time) if last_emit_time > 0 else 0.0
+                    last_emit_time = now
+                    # Emit a (text, gap_seconds) tuple so the UI can join chunks intelligently.
+                    text_queue.put_nowait((text.strip(), gap))
+                    diag("transcription_ok", path=path, text_len=len(text.strip()), gap=round(gap, 2))
                 else:
                     diag("transcription_empty", path=path)
             except Exception as e:

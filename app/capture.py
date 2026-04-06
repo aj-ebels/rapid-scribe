@@ -1,9 +1,11 @@
 """
 Audio capture: default input and loopback workers, silence detection, meeting-mode callback.
 """
+import os
 import sys
 import tempfile
 import queue
+import uuid
 from pathlib import Path
 
 import numpy as np
@@ -55,63 +57,126 @@ def _build_leveler_config(leveler_settings: dict | None) -> AudioLevelerConfig:
 
 
 def capture_worker(device_index, chunk_queue, stop_event, leveler_settings=None, health_queue=None):
-    """Record chunks; save to temp file only when not silent, put path in queue."""
+    """Record using streaming input with VAD-based silence chunking for low-latency transcription.
+
+    Uses sd.InputStream (non-blocking callback) instead of sd.rec() so chunks are emitted
+    at speech boundaries (1–3 s) rather than on a fixed 5-second clock. Each chunk is
+    written to a unique temp file to avoid race conditions with the transcription worker.
+    """
     leveler = AudioLeveler(_build_leveler_config(leveler_settings))
-    while not stop_event.is_set():
+    block_queue: queue.Queue = queue.Queue(maxsize=200)
+
+    # VAD / chunking parameters (tuned for responsiveness)
+    BLOCK_SIZE = 512                                        # ~32 ms per block at 16 kHz
+    MIN_CHUNK_FRAMES = int(SAMPLE_RATE * 1.0)              # emit after ≥ 1 s of speech
+    MAX_CHUNK_FRAMES = int(SAMPLE_RATE * 3.0)              # force-emit after 3 s
+    SILENCE_TRIGGER_FRAMES = int(SAMPLE_RATE * 0.35)       # 350 ms of silence → emit
+    HANGOVER_BLOCKS = 5                                     # ~160 ms hangover after speech
+
+    temp_dir = os.path.join(os.environ.get("TEMP", tempfile.gettempdir()), "MeetingsChunks")
+    os.makedirs(temp_dir, exist_ok=True)
+
+    def _audio_callback(indata, frames, time_info, status):
+        """Runs on the audio thread — only enqueue, never block."""
         try:
-            chunk = sd.rec(
-                CHUNK_SAMPLES,
-                samplerate=SAMPLE_RATE,
-                channels=CHANNELS,
-                dtype=np.float32,
-                device=device_index,
-                blocking=True,
-            )
-            if stop_event.is_set():
-                break
-            mono = np.asarray(chunk, dtype=np.float32).reshape(-1)
-            mono, stats = leveler.process(mono)
-            if health_queue is not None:
+            block_queue.put_nowait(indata[:, 0].copy())
+        except queue.Full:
+            pass  # drop block rather than stalling the audio thread
+
+    def _flush(buf, buf_frames):
+        """Levelize, gate, write WAV, and enqueue the accumulated buffer."""
+        if not buf or buf_frames == 0:
+            return
+        audio = np.concatenate(buf).astype(np.float32)
+        audio, stats = leveler.process(audio)
+        rms = _rms32(audio)
+        if rms < SILENCE_RMS_THRESHOLD * 0.5:
+            return  # skip effectively silent chunks
+        audio_int16 = (np.clip(audio, -1.0, 1.0) * 32767).astype(np.int16)
+        wav_path = os.path.join(temp_dir, f"chunk_{uuid.uuid4().hex}.wav")
+        wavfile.write(wav_path, SAMPLE_RATE, audio_int16)
+        diag(
+            "chunk_queued",
+            path=wav_path,
+            worker="default",
+            rms_out=round(rms, 6),
+            gain_db=round(float(stats.get("gain_db", 0.0)), 2),
+            noise_floor=round(float(stats.get("noise_floor", 0.0)), 6),
+        )
+        try:
+            chunk_queue.put((wav_path, rms), timeout=1.0)
+        except queue.Full:
+            pass
+
+    buf = []
+    buf_frames = 0
+    consecutive_silent = 0
+    noise_floor = SILENCE_RMS_THRESHOLD
+    hangover_left = 0
+
+    try:
+        with sd.InputStream(
+            device=device_index,
+            channels=1,
+            samplerate=SAMPLE_RATE,
+            blocksize=BLOCK_SIZE,
+            dtype=np.float32,
+            callback=_audio_callback,
+        ):
+            while not stop_event.is_set():
                 try:
-                    health_queue.put_nowait({
-                        "source": "default_mic",
-                        "rms_in": float(stats.get("rms_in", 0.0)),
-                        "rms_out": float(stats.get("rms_out", 0.0)),
-                        "noise_floor": float(stats.get("noise_floor", 0.0)),
-                        "threshold": float(stats.get("threshold", 0.0)),
-                        "gain_db": float(stats.get("gain_db", 0.0)),
-                        "clip_count": int(stats.get("clip_count", 0)),
-                        "active": bool(stats.get("active", 0.0) >= 0.5),
-                    })
-                except queue.Full:
-                    pass
-            if _is_silent(mono, threshold=max(SILENCE_RMS_THRESHOLD, float(stats.get("threshold", SILENCE_RMS_THRESHOLD)) * 0.75)):
-                continue
-            rms = _rms32(mono)
-            chunk_int16 = (np.clip(mono, -1.0, 1.0) * 32767).astype(np.int16)
-            wavfile.write(str(CHUNK_PATH), SAMPLE_RATE, chunk_int16)
+                    block = block_queue.get(timeout=0.3)
+                except queue.Empty:
+                    continue
+
+                block_rms = _rms32(block)
+
+                # Adaptive noise floor (exponential moving average)
+                learn_upper = max(SILENCE_RMS_THRESHOLD * 5.0, noise_floor * 1.7)
+                if block_rms <= learn_upper:
+                    noise_floor = 0.96 * noise_floor + 0.04 * block_rms
+                adaptive_threshold = max(SILENCE_RMS_THRESHOLD, noise_floor * 2.5)
+
+                # Hangover: hold the speech gate open for HANGOVER_BLOCKS after last voiced block
+                is_silent = block_rms < adaptive_threshold
+                if is_silent:
+                    if hangover_left > 0:
+                        hangover_left -= 1
+                        is_silent = False
+                else:
+                    hangover_left = HANGOVER_BLOCKS
+                    consecutive_silent = 0
+
+                buf.append(block)
+                buf_frames += len(block)
+                if is_silent:
+                    consecutive_silent += len(block)
+
+                # Emit conditions
+                if buf_frames >= MAX_CHUNK_FRAMES:
+                    _flush(buf, buf_frames)
+                    buf, buf_frames, consecutive_silent = [], 0, 0
+                elif buf_frames >= MIN_CHUNK_FRAMES and consecutive_silent >= SILENCE_TRIGGER_FRAMES:
+                    _flush(buf, buf_frames)
+                    buf, buf_frames, consecutive_silent = [], 0, 0
+
+            # Drain remaining audio when recording stops
+            while not block_queue.empty():
+                try:
+                    block = block_queue.get_nowait()
+                    buf.append(block)
+                    buf_frames += len(block)
+                except queue.Empty:
+                    break
+            _flush(buf, buf_frames)
+
+    except Exception as e:
+        diag("capture_error", worker="default", error=str(e))
+        if not stop_event.is_set():
             try:
-                chunk_queue.put((str(CHUNK_PATH), rms), timeout=1.0)
-                diag(
-                    "chunk_queued",
-                    path=str(CHUNK_PATH),
-                    worker="default",
-                    rms_in=round(float(stats.get("rms_in", 0.0)), 6),
-                    rms_out=round(float(stats.get("rms_out", rms)), 6),
-                    gain_db=round(float(stats.get("gain_db", 0.0)), 2),
-                    noise_floor=round(float(stats.get("noise_floor", 0.0)), 6),
-                    clip_count=int(stats.get("clip_count", 0)),
-                )
+                chunk_queue.put_nowait(("error", str(e)))
             except queue.Full:
                 pass
-        except Exception as e:
-            diag("capture_error", worker="default", error=str(e))
-            if not stop_event.is_set():
-                try:
-                    chunk_queue.put_nowait(("error", str(e)))
-                except queue.Full:
-                    pass
-            break
 
 
 def capture_worker_loopback(loopback_device_index, chunk_queue, stop_event, level_queue=None):

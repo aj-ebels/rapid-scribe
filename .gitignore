@@ -6,3 +6,4 @@ prompts.json
 meetings.json
 .env
 __pycache__/
+.claude/
