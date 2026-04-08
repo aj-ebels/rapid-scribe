@@ -63,13 +63,15 @@ from .meetings_storage import (
     append_ai_chat_message,
     clear_ai_chat_messages,
 )
+from .transcript_join import join_transcription_items
 
 if sys.platform == "win32":
     from .audio_mixer import AudioMixer
     from .chunk_recorder import ChunkRecorder
 
-
 _PARAGRAPH_GAP_SEC = 6.0  # silence gap (seconds between emissions) that triggers a new paragraph
+# Live transcript “roll in”: one code point per tick (ms between ticks).
+TRANSCRIPT_TYPEWRITER_MS = 10
 
 
 def _discard_pending_chunks(chunk_queue):
@@ -111,6 +113,116 @@ def _discard_pending_text(text_queue):
         diag("text_queue_drained", discarded=discarded)
 
 
+def _cancel_transcript_typewriter_timer(app):
+    aid = getattr(app, "_transcript_typewriter_after_id", None)
+    if aid is not None:
+        try:
+            app.root.after_cancel(aid)
+        except Exception:
+            pass
+    app._transcript_typewriter_after_id = None
+
+
+def _transcript_typewriter_flush_backlog_now(app):
+    """Append any pending joined backlog immediately (no animation). Updates _transcript_tail."""
+    backlog = getattr(app, "_transcript_text_backlog", None)
+    if not backlog:
+        return
+    tail = getattr(app, "_transcript_tail", "\n")
+    items = list(backlog)
+    backlog.clear()
+    combined, new_tail = join_transcription_items(
+        items,
+        initial_tail=tail,
+        paragraph_gap_sec=_PARAGRAPH_GAP_SEC,
+    )
+    if combined:
+        app.log.insert("end", combined)
+        app.log.see("end")
+        app._transcript_tail = new_tail
+
+
+def _finish_transcript_typewriter_segment(app):
+    app._transcript_typewriter_after_id = None
+    app._transcript_tail = getattr(app, "_transcript_typewriter_segment_tail", "\n")
+    app._transcript_typewriter_buffer = ""
+    app._transcript_typewriter_index = 0
+    app._transcript_typewriter_segment_tail = "\n"
+    _process_transcript_text_backlog(app)
+
+
+def _tick_transcript_typewriter(app):
+    app._transcript_typewriter_after_id = None
+    buf = getattr(app, "_transcript_typewriter_buffer", "")
+    i = getattr(app, "_transcript_typewriter_index", 0)
+    if i >= len(buf):
+        _finish_transcript_typewriter_segment(app)
+        return
+    ch = buf[i]
+    try:
+        app.log.insert("end", ch)
+        app.log.see("end")
+    except Exception:
+        pass
+    app._transcript_typewriter_index = i + 1
+    app._transcript_typewriter_after_id = app.root.after(
+        TRANSCRIPT_TYPEWRITER_MS,
+        lambda: _tick_transcript_typewriter(app),
+    )
+
+
+def _process_transcript_text_backlog(app):
+    """If not currently animating, join backlog to one segment and start the typewriter."""
+    if getattr(app, "_transcript_typewriter_after_id", None) is not None:
+        return
+    backlog = getattr(app, "_transcript_text_backlog", None)
+    if not backlog:
+        return
+    tail = getattr(app, "_transcript_tail", "\n")
+    items = list(backlog)
+    backlog.clear()
+    combined, new_tail = join_transcription_items(
+        items,
+        initial_tail=tail,
+        paragraph_gap_sec=_PARAGRAPH_GAP_SEC,
+    )
+    if not combined:
+        return
+    app._transcript_typewriter_buffer = combined
+    app._transcript_typewriter_index = 0
+    app._transcript_typewriter_segment_tail = new_tail
+    _tick_transcript_typewriter(app)
+
+
+def flush_transcript_typewriter_immediate(app):
+    """Cancel animation; append any partial segment and pending backlog in one go (e.g. on Stop)."""
+    _cancel_transcript_typewriter_timer(app)
+    buf = getattr(app, "_transcript_typewriter_buffer", "")
+    i = getattr(app, "_transcript_typewriter_index", 0)
+    if buf and i < len(buf):
+        rest = buf[i:]
+        try:
+            app.log.insert("end", rest)
+            app.log.see("end")
+        except Exception:
+            pass
+        app._transcript_tail = getattr(app, "_transcript_typewriter_segment_tail", "\n")
+    app._transcript_typewriter_buffer = ""
+    app._transcript_typewriter_index = 0
+    app._transcript_typewriter_segment_tail = "\n"
+    _transcript_typewriter_flush_backlog_now(app)
+
+
+def cancel_transcript_typewriter_discard_pending(app):
+    """Stop animation and drop buffered queue items without writing them (clear / load meeting)."""
+    _cancel_transcript_typewriter_timer(app)
+    if getattr(app, "_transcript_text_backlog", None) is not None:
+        app._transcript_text_backlog.clear()
+    app._transcript_typewriter_buffer = ""
+    app._transcript_typewriter_index = 0
+    app._transcript_typewriter_segment_tail = "\n"
+
+
 def poll_text_queue(app):
     """Called periodically from main thread to append new transcript text.
     Drains all available items then does a single insert/scroll.
@@ -128,39 +240,8 @@ def poll_text_queue(app):
         pass
 
     if items:
-        # _transcript_tail tracks the last character written so we know what prefix to use.
-        # Initialise to '\n' so the very first chunk never gets a leading space.
-        tail = getattr(app, "_transcript_tail", "\n")
-        parts = []
-        for item in items:
-            if isinstance(item, tuple) and len(item) == 2:
-                text, gap = item
-                if not text:
-                    continue
-                # Decide prefix based on the current log tail and the gap since last emission.
-                if not tail or tail in ("\n", " "):
-                    # Log is empty or already ends with whitespace — no prefix needed.
-                    prefix = ""
-                elif gap >= _PARAGRAPH_GAP_SEC:
-                    # Long pause after existing content — start a new paragraph.
-                    prefix = "\n\n"
-                else:
-                    # Continuing speech — space-join onto existing content.
-                    prefix = " "
-                segment = prefix + text
-            else:
-                # Plain string (error / status message) — insert as-is.
-                segment = str(item)
-
-            parts.append(segment)
-            if segment:
-                tail = segment[-1]
-
-        if parts:
-            combined = "".join(parts)
-            app.log.insert("end", combined)
-            app.log.see("end")
-            app._transcript_tail = tail
+        app._transcript_text_backlog.extend(items)
+        _process_transcript_text_backlog(app)
 
     if items and getattr(app, "schedule_save_meeting", None) is not None:
         app.schedule_save_meeting()
@@ -268,6 +349,7 @@ def start_stop(app):
         app.running = False
         app.stop_event.set()
         app._stopping = True
+        flush_transcript_typewriter_immediate(app)
 
         mixer = getattr(app, "mixer", None)
         recorder = getattr(app, "recorder", None)
@@ -768,6 +850,11 @@ def main(splash_window=None):
     # Slight buffering avoids immediate chunk drops during transient CPU spikes.
     app.chunk_queue = multiprocessing.Queue(maxsize=3)
     app.text_queue = multiprocessing.Queue()
+    app._transcript_text_backlog = []
+    app._transcript_typewriter_after_id = None
+    app._transcript_typewriter_buffer = ""
+    app._transcript_typewriter_index = 0
+    app._transcript_typewriter_segment_tail = "\n"
     app.level_queue = queue.Queue(maxsize=32)
     app.capture_thread = None
     app.transcription_process = None
@@ -1243,6 +1330,7 @@ def main(splash_window=None):
             root.update()
     def clear_transcript():
         if messagebox.askyesno("Clear transcript", "Clear the entire transcript? This cannot be undone.", parent=root):
+            cancel_transcript_typewriter_discard_pending(app)
             app.log.delete("1.0", "end")
             app._transcript_tail = ""  # log is now empty; no prefix before next transcribed chunk
     ctk.CTkButton(card_header, text="Copy transcript", font=ctk.CTkFont(family=UI_FONT_FAMILY, size=F.small), width=100, height=28, corner_radius=UI_RADIUS, fg_color=COLORS["secondary_fg"], hover_color=COLORS["secondary_hover"], command=copy_transcript).pack(side="left", padx=(UI_PAD, 0), pady=4)
@@ -1820,6 +1908,7 @@ def main(splash_window=None):
             return
         app._loading_meeting = True
         try:
+            cancel_transcript_typewriter_discard_pending(app)
             app.current_meeting_id = meeting["id"]
             app.meeting_name_var.set(meeting.get("meeting_name") or "New Meeting")
             app.meeting_date_var.set(_normalize_meeting_date(meeting.get("meeting_date"), fallback=meeting.get("created_at")))

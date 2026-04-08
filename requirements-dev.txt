@@ -1,0 +1,2 @@
+# Optional: tests and local tooling (not required to run the app)
+pytest>=7.0.0
