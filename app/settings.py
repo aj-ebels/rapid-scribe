@@ -43,6 +43,8 @@ def load_settings(default_model=None):
         "loopback_device_index": None,
         "transcription_model": model,
         "chunk_duration_sec": 5.0,
+        # default (mic): fixed windows + no leveler, same ASR chunking as loopback. "vad" = legacy 1–3 s + leveler.
+        "mic_chunking_mode": "fixed",
         "use_silence_chunking": True,
         "min_chunk_sec": 1.0,
         "max_chunk_sec": 6.0,
@@ -76,6 +78,10 @@ def load_settings(default_model=None):
             out["transcription_model"] = data.get("transcription_model", model) or model
             if "chunk_duration_sec" in data and isinstance(data["chunk_duration_sec"], (int, float)):
                 out["chunk_duration_sec"] = max(3.0, min(30.0, float(data["chunk_duration_sec"])))
+            if "mic_chunking_mode" in data and isinstance(data["mic_chunking_mode"], str):
+                m = data["mic_chunking_mode"].strip().lower()
+                if m in ("fixed", "vad"):
+                    out["mic_chunking_mode"] = m
             if "use_silence_chunking" in data:
                 out["use_silence_chunking"] = bool(data["use_silence_chunking"])
             if "min_chunk_sec" in data and isinstance(data["min_chunk_sec"], (int, float)):

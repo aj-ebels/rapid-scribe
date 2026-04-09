@@ -1067,15 +1067,35 @@ def main(splash_window=None):
     app.volume_bar.pack(side="right")
     btn_frame = ctk.CTkFrame(header, fg_color="transparent")
     btn_frame.pack(side="right", padx=UI_PAD_LG, pady=UI_PAD)
+    app.start_btn = None
+    app.stop_btn = None
+    app._record_ctk = None
+    app._stop_ctk = None
     if _use_image_buttons:
         _btn_w = max(_disp_rw, _disp_sw)
         _btn_h = max(_disp_rh, _disp_sh)
-        app._record_ctk = ctk.CTkImage(light_image=_record_img, dark_image=_record_img, size=(_btn_w, _btn_h))
-        app._stop_ctk = ctk.CTkImage(light_image=_stop_img, dark_image=_stop_img, size=(_btn_w, _btn_h))
-        app.start_btn = ctk.CTkButton(btn_frame, image=app._record_ctk, text="", command=lambda: start_stop(app), width=_btn_w, height=_btn_h, fg_color="transparent", hover_color=("gray85", "gray25"), state="disabled")
-        app.start_btn.pack(side="left")
-        app.stop_btn = None
-    else:
+        try:
+            app._record_ctk = ctk.CTkImage(light_image=_record_img, dark_image=_record_img, size=(_btn_w, _btn_h))
+            app._stop_ctk = ctk.CTkImage(light_image=_stop_img, dark_image=_stop_img, size=(_btn_w, _btn_h))
+            app.start_btn = ctk.CTkButton(
+                btn_frame,
+                image=app._record_ctk,
+                text="",
+                command=lambda: start_stop(app),
+                width=_btn_w,
+                height=_btn_h,
+                fg_color="transparent",
+                hover_color=("gray85", "gray25"),
+                state="disabled",
+            )
+            app.start_btn.pack(side="left")
+        except Exception as e:
+            # Pillow ImageTk / _imagingtk can fail on some Windows + Python builds (e.g. WinError 299, TclError).
+            diag("record_stop_icons_fallback", error=str(e))
+            app._record_ctk = None
+            app._stop_ctk = None
+            app.start_btn = None
+    if app.start_btn is None:
         app.start_btn = ctk.CTkButton(btn_frame, text="Start", command=lambda: start_stop(app), font=ctk.CTkFont(family=UI_FONT_FAMILY, size=F.header, weight="bold"), width=100, height=36, corner_radius=UI_RADIUS, fg_color=COLORS["primary_fg"], hover_color=COLORS["primary_hover"], state="disabled")
         app.start_btn.pack(side="left", padx=(0, UI_PAD))
         app.stop_btn = ctk.CTkButton(btn_frame, text="Stop", command=lambda: start_stop(app), state="disabled", font=ctk.CTkFont(family=UI_FONT_FAMILY, size=F.header, weight="bold"), width=100, height=36, corner_radius=UI_RADIUS, fg_color=COLORS["danger_fg"], hover_color=COLORS["danger_hover"])
@@ -2219,7 +2239,7 @@ def main(splash_window=None):
     ctk.CTkLabel(settings_card, text="Audio leveling", font=ctk.CTkFont(family=UI_FONT_FAMILY, size=F.header, weight="bold")).pack(anchor="w", pady=(0, 4))
     ctk.CTkLabel(
         settings_card,
-        text="Helps normalize very quiet laptop mics and very hot external mics before transcription.",
+        text="Helps normalize very quiet laptop mics and very hot external mics. Used for Meeting mode and for Default input when “VAD + leveler” chunking is selected. Fixed-window Default input matches system-audio (loopback) processing — no leveling on that path.",
         font=ctk.CTkFont(family=UI_FONT_FAMILY, size=F.small),
         text_color="gray",
         wraplength=520,
@@ -2258,7 +2278,32 @@ def main(splash_window=None):
     val_to_mode = {v: k for k, v in mode_to_val.items()}
     app.audio_mode_var = ctk.StringVar(value=mode_to_val.get(app.settings.get("audio_mode")) or ("Meeting (mic + loopback)" if app.settings.get("audio_mode") == "meeting_ffmpeg" else mode_values[0]))
     app.audio_mode_menu = ctk.CTkOptionMenu(settings_card, values=mode_values, variable=app.audio_mode_var, width=320, font=ctk.CTkFont(family=UI_FONT_FAMILY, size=F.small), command=lambda v: _apply_settings(app))
-    app.audio_mode_menu.pack(anchor="w", pady=(0, UI_PAD_LG))
+    app.audio_mode_menu.pack(anchor="w", pady=(0, 6))
+
+    mic_chunk_labels = ("Fixed windows (recommended)", "VAD + leveler (lower latency)")
+    mic_chunk_to_mode = {mic_chunk_labels[0]: "fixed", mic_chunk_labels[1]: "vad"}
+    mic_chunk_from_mode = {v: k for k, v in mic_chunk_to_mode.items()}
+    _mcm = str(app.settings.get("mic_chunking_mode", "fixed")).lower()
+    if _mcm not in ("fixed", "vad"):
+        _mcm = "fixed"
+    app.mic_chunking_var = ctk.StringVar(value=mic_chunk_from_mode.get(_mcm, mic_chunk_labels[0]))
+    ctk.CTkLabel(
+        settings_card,
+        text="Default input chunking (when Capture mode = Default input)",
+        font=ctk.CTkFont(family=UI_FONT_FAMILY, size=F.small),
+        text_color="gray",
+        wraplength=520,
+        anchor="w",
+    ).pack(anchor="w", pady=(0, 4))
+    app.mic_chunking_menu = ctk.CTkOptionMenu(
+        settings_card,
+        values=list(mic_chunk_labels),
+        variable=app.mic_chunking_var,
+        width=320,
+        font=ctk.CTkFont(family=UI_FONT_FAMILY, size=F.small),
+        command=lambda _v: _apply_settings(app),
+    )
+    app.mic_chunking_menu.pack(anchor="w", pady=(0, UI_PAD_LG))
 
     ctk.CTkLabel(settings_card, text="Meeting microphone (used when Capture mode = Meeting)", font=ctk.CTkFont(family=UI_FONT_FAMILY, size=F.small, weight="bold")).pack(anchor="w", pady=(UI_PAD, 4))
     # Device lists loaded in background so main thread never blocks on enumeration.
@@ -2407,11 +2452,14 @@ def main(splash_window=None):
                 pass
         _render_input_sensitivity_label()
         _render_min_rms_label()
+        _mic_chunk_label = app.mic_chunking_var.get() if getattr(app, "mic_chunking_var", None) else mic_chunk_labels[0]
+        _mic_chunk_mode = mic_chunk_to_mode.get(_mic_chunk_label, "fixed")
         app.settings = {
             **app.settings,
             "audio_mode": mode,
             "meeting_mic_device": meeting_idx,
             "loopback_device_index": loopback_idx,
+            "mic_chunking_mode": _mic_chunk_mode,
             "audio_auto_level": bool(app.audio_auto_level_var.get()),
             "input_sensitivity": max(0.5, min(3.0, float(app.input_sensitivity_var.get()))),
             "min_rms_transcribe": max(0.001, min(0.05, float(app.min_rms_var.get()))),

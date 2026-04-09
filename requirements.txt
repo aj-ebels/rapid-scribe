@@ -9,4 +9,5 @@ customtkinter>=5.2.0
 onnx-asr[cpu,hub]>=0.10.0
 # OpenAI API for AI Summary
 openai>=1.0.0
-Pillow>=10.0.0
+# 11+ recommended for Python 3.13 + Tk on Windows (older Pillow can fail loading _imagingtk).
+Pillow>=11.0.0

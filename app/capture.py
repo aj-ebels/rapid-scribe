@@ -56,7 +56,131 @@ def _build_leveler_config(leveler_settings: dict | None) -> AudioLevelerConfig:
     return cfg
 
 
+def _take_front_mono_samples(buf: list, n_take: int) -> tuple[np.ndarray, list]:
+    """Pop the first n_take float32 mono samples from a list of 1-D blocks; return (taken, buf)."""
+    if n_take <= 0:
+        return np.array([], dtype=np.float32), buf
+    parts = []
+    remaining = n_take
+    while remaining > 0 and buf:
+        b = buf[0]
+        if len(b) <= remaining:
+            parts.append(b)
+            remaining -= len(b)
+            buf.pop(0)
+        else:
+            parts.append(b[:remaining])
+            buf[0] = b[remaining:]
+            remaining = 0
+    if not parts:
+        return np.array([], dtype=np.float32), buf
+    return np.concatenate(parts).astype(np.float32), buf
+
+
 def capture_worker(device_index, chunk_queue, stop_event, leveler_settings=None, health_queue=None):
+    """Default microphone capture: fixed-duration chunks (loopback-aligned) or legacy VAD mode.
+
+    ``leveler_settings`` is the app settings dict. ``mic_chunking_mode`` selects:
+      - ``fixed`` (default): same ~5 s windows and silence gate as loopback, no AudioLeveler.
+      - ``vad``: prior behavior (1–3 s VAD chunks + leveler) for lower latency.
+    """
+    settings = leveler_settings or {}
+    mode = str(settings.get("mic_chunking_mode", "fixed")).strip().lower()
+    if mode == "vad":
+        capture_worker_vad(device_index, chunk_queue, stop_event, leveler_settings, health_queue)
+    else:
+        capture_worker_fixed(device_index, chunk_queue, stop_event, leveler_settings, health_queue)
+
+
+def capture_worker_fixed(device_index, chunk_queue, stop_event, leveler_settings=None, health_queue=None):
+    """16 kHz mic capture: fixed-duration chunks, no leveler — aligned with capture_worker_loopback."""
+    settings = leveler_settings or {}
+    duration_sec = float(settings.get("chunk_duration_sec", CHUNK_DURATION_SEC))
+    duration_sec = max(3.0, min(30.0, duration_sec))
+    chunk_samples = int(SAMPLE_RATE * duration_sec)
+
+    block_queue: queue.Queue = queue.Queue(maxsize=200)
+    BLOCK_SIZE = 512
+    temp_dir = os.path.join(os.environ.get("TEMP", tempfile.gettempdir()), "MeetingsChunks")
+    os.makedirs(temp_dir, exist_ok=True)
+
+    def _audio_callback(indata, frames, time_info, status):
+        try:
+            block_queue.put_nowait(indata[:, 0].copy())
+        except queue.Full:
+            pass
+
+    buf: list = []
+    buf_frames = 0
+
+    def _emit_chunk(mono: np.ndarray):
+        if mono.size < chunk_samples:
+            mono = np.pad(mono.astype(np.float32), (0, chunk_samples - mono.size))
+        else:
+            mono = mono[:chunk_samples].astype(np.float32)
+        if _is_silent(mono):
+            return
+        rms = _rms32(mono)
+        audio_int16 = (np.clip(mono, -1.0, 1.0) * 32767).astype(np.int16)
+        wav_path = os.path.join(temp_dir, f"chunk_{uuid.uuid4().hex}.wav")
+        wavfile.write(wav_path, SAMPLE_RATE, audio_int16)
+        diag(
+            "chunk_queued",
+            path=wav_path,
+            worker="default_fixed",
+            rms_out=round(rms, 6),
+        )
+        try:
+            chunk_queue.put((wav_path, rms), timeout=1.0)
+        except queue.Full:
+            pass
+
+    try:
+        with sd.InputStream(
+            device=device_index,
+            channels=1,
+            samplerate=SAMPLE_RATE,
+            blocksize=BLOCK_SIZE,
+            dtype=np.float32,
+            callback=_audio_callback,
+        ):
+            while not stop_event.is_set():
+                try:
+                    block = block_queue.get(timeout=0.3)
+                except queue.Empty:
+                    continue
+                buf.append(block)
+                buf_frames += len(block)
+                while buf_frames >= chunk_samples:
+                    mono, buf = _take_front_mono_samples(buf, chunk_samples)
+                    buf_frames = sum(len(x) for x in buf)
+                    _emit_chunk(mono)
+
+            while not block_queue.empty():
+                try:
+                    block = block_queue.get_nowait()
+                    buf.append(block)
+                    buf_frames += len(block)
+                except queue.Empty:
+                    break
+            while buf_frames >= chunk_samples:
+                mono, buf = _take_front_mono_samples(buf, chunk_samples)
+                buf_frames = sum(len(x) for x in buf)
+                _emit_chunk(mono)
+            if buf_frames > 0:
+                mono, buf = _take_front_mono_samples(buf, buf_frames)
+                _emit_chunk(mono)
+
+    except Exception as e:
+        diag("capture_error", worker="default_fixed", error=str(e))
+        if not stop_event.is_set():
+            try:
+                chunk_queue.put_nowait(("error", str(e)))
+            except queue.Full:
+                pass
+
+
+def capture_worker_vad(device_index, chunk_queue, stop_event, leveler_settings=None, health_queue=None):
     """Record using streaming input with VAD-based silence chunking for low-latency transcription.
 
     Uses sd.InputStream (non-blocking callback) instead of sd.rec() so chunks are emitted

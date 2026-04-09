@@ -1,7 +1,7 @@
 """
-Replay a WAV file through the same VAD + leveler chunking as capture_worker (16 kHz mono).
+Replay a WAV file through the same VAD chunking as capture_worker (16 kHz mono).
 
-Keep algorithm parameters in sync with capture.capture_worker.
+Optional AudioLeveler (mirrors capture_worker_vad when enabled).
 """
 from __future__ import annotations
 
@@ -45,16 +45,16 @@ def _load_mono_float32_16k(path: str | Path) -> np.ndarray:
     return data
 
 
-def iter_chunks_from_wav(path: str | Path, leveler_settings=None, temp_dir=None):
+def iter_chunks_from_wav(path: str | Path, leveler_settings=None, temp_dir=None, *, use_leveler: bool = True):
     """
     Yield (wav_path, rms, start_sample, end_sample) for each chunk (sample indices in
     the resampled mono stream, same timeline as capture_worker).
 
-    Caller should unlink each wav_path after use. Temp files live under temp_dir
-    (default: system temp / MeetingsOfflineChunks).
+    use_leveler: when False, skip AGC/expander (raw float audio → int16 WAV), same VAD cut points.
+    Caller should unlink each wav_path after use.
     """
     samples = _load_mono_float32_16k(path)
-    leveler = AudioLeveler(_build_leveler_config(leveler_settings))
+    leveler = AudioLeveler(_build_leveler_config(leveler_settings)) if use_leveler else None
     base = temp_dir or os.path.join(os.environ.get("TEMP", os.path.expanduser("~")), "MeetingsOfflineChunks")
     os.makedirs(base, exist_ok=True)
 
@@ -69,7 +69,10 @@ def iter_chunks_from_wav(path: str | Path, leveler_settings=None, temp_dir=None)
         if not buf or buf_frames == 0:
             return None
         audio = np.concatenate(buf).astype(np.float32)
-        audio, _stats = leveler.process(audio)
+        if leveler is not None:
+            audio, _stats = leveler.process(audio)
+        else:
+            audio = np.clip(audio, -1.0, 1.0).astype(np.float32)
         rms = _rms32(audio)
         if rms < SILENCE_RMS_THRESHOLD * 0.5:
             return None

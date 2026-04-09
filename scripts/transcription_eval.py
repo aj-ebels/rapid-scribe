@@ -8,6 +8,9 @@ Usage (from repository root):
 
 Options:
   --model HF_REPO   Override transcription model for all cases
+  --mode MODE       mic | loopback | both | triple | mic_vad | mic_vad_nolevel
+                    (default: both). triple = mic + loopback + mic_vad_nolevel (three-way compare).
+                    mic_vad_nolevel = VAD chunks without AGC; mic_vad = VAD + leveler (legacy).
   --json            Print machine-readable JSON summary to stdout
 """
 from __future__ import annotations
@@ -37,19 +40,34 @@ def main():
         help="JSON manifest (list of cases with audio_file, reference text)",
     )
     p.add_argument("--model", type=str, default=None, help="Hugging Face repo id for onnx-asr")
+    p.add_argument(
+        "--mode",
+        choices=("mic", "loopback", "both", "triple", "mic_vad", "mic_vad_nolevel"),
+        default="both",
+        help="Simulated capture path. triple = mic + loopback + mic_vad_nolevel.",
+    )
     p.add_argument("--json", action="store_true", help="Emit JSON instead of text report")
     args = p.parse_args()
     manifest = args.manifest.resolve()
     if not manifest.is_file():
         print(f"Manifest not found: {manifest}", file=sys.stderr)
         sys.exit(2)
-    results = run_manifest(manifest, model_id=args.model)
+    if args.mode == "both":
+        capture_modes = ("mic", "loopback")
+    elif args.mode == "triple":
+        capture_modes = ("mic", "loopback", "mic_vad_nolevel")
+    elif args.mode == "mic_vad":
+        capture_modes = ("mic_vad",)
+    else:
+        capture_modes = (args.mode,)
+    results = run_manifest(manifest, model_id=args.model, capture_modes=capture_modes)
     if args.json:
         out = {
             "summary": summarize_results(results),
             "results": [
                 {
                     "id": r.case_id,
+                    "capture_mode": r.capture_mode,
                     "audio_path": r.audio_path,
                     "wer": r.wer,
                     "cer": r.cer,

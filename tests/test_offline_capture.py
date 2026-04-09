@@ -36,6 +36,23 @@ def test_iter_chunks_from_wav_yields_files(speech_like_wav, tmp_path):
     assert len(paths) >= 1
 
 
+def test_iter_chunks_from_wav_without_leveler(speech_like_wav, tmp_path):
+    paths = []
+    try:
+        for wav_path, _rms, _s0, _s1 in iter_chunks_from_wav(
+            speech_like_wav,
+            leveler_settings=None,
+            temp_dir=str(tmp_path / "chunks_nl"),
+            use_leveler=False,
+        ):
+            paths.append(Path(wav_path))
+            assert Path(wav_path).is_file()
+    finally:
+        for q in paths:
+            q.unlink(missing_ok=True)
+    assert len(paths) >= 1
+
+
 def test_empty_wav(tmp_path):
     sr = 16000
     p = tmp_path / "silent.wav"
