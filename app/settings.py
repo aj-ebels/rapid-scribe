@@ -42,14 +42,10 @@ def load_settings(default_model=None):
         "meeting_mic_device": None,
         "loopback_device_index": None,
         "transcription_model": model,
-        "chunk_duration_sec": 5.0,
-        # default (mic): fixed windows + no leveler, same ASR chunking as loopback. "vad" = legacy 1–3 s + leveler.
-        "mic_chunking_mode": "fixed",
-        "use_silence_chunking": True,
-        "min_chunk_sec": 1.0,
-        "max_chunk_sec": 6.0,
-        "silence_duration_sec": 0.35,
+        # Chunking pathway, duration, VAD tuning, and leveling are all developer toggles
+        # in app/dev_config.py. They are no longer stored in settings.json.
         "min_rms_transcribe": 0.01,
+        # audio_auto_level on/off is now dev_config.LEVELING_ENABLED; kept here for calibration profiles only.
         "audio_auto_level": True,
         "input_sensitivity": 0.8,
         "agc_target_rms": 0.035,
@@ -76,20 +72,8 @@ def load_settings(default_model=None):
             out["meeting_mic_device"] = data.get("meeting_mic_device")
             out["loopback_device_index"] = data.get("loopback_device_index")
             out["transcription_model"] = data.get("transcription_model", model) or model
-            if "chunk_duration_sec" in data and isinstance(data["chunk_duration_sec"], (int, float)):
-                out["chunk_duration_sec"] = max(3.0, min(30.0, float(data["chunk_duration_sec"])))
-            if "mic_chunking_mode" in data and isinstance(data["mic_chunking_mode"], str):
-                m = data["mic_chunking_mode"].strip().lower()
-                if m in ("fixed", "vad"):
-                    out["mic_chunking_mode"] = m
-            if "use_silence_chunking" in data:
-                out["use_silence_chunking"] = bool(data["use_silence_chunking"])
-            if "min_chunk_sec" in data and isinstance(data["min_chunk_sec"], (int, float)):
-                out["min_chunk_sec"] = max(0.5, min(10.0, float(data["min_chunk_sec"])))
-            if "max_chunk_sec" in data and isinstance(data["max_chunk_sec"], (int, float)):
-                out["max_chunk_sec"] = max(3.0, min(60.0, float(data["max_chunk_sec"])))
-            if "silence_duration_sec" in data and isinstance(data["silence_duration_sec"], (int, float)):
-                out["silence_duration_sec"] = max(0.15, min(2.0, float(data["silence_duration_sec"])))
+            # chunk_duration_sec / mic_chunking_mode / use_silence_chunking / min_chunk_sec /
+            # max_chunk_sec / silence_duration_sec are now in dev_config; ignore old keys.
             if "min_rms_transcribe" in data and isinstance(data["min_rms_transcribe"], (int, float)):
                 out["min_rms_transcribe"] = max(0.001, min(0.05, float(data["min_rms_transcribe"])))
             if "audio_auto_level" in data:

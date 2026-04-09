@@ -3,12 +3,6 @@
   "meeting_mic_device": null,
   "loopback_device_index": null,
   "transcription_model": "istupakov/parakeet-tdt-0.6b-v2-onnx",
-  "chunk_duration_sec": 5.0,
-  "mic_chunking_mode": "fixed",
-  "use_silence_chunking": true,
-  "min_chunk_sec": 1.5,
-  "max_chunk_sec": 8.0,
-  "silence_duration_sec": 0.5,
   "min_rms_transcribe": 0.005000000000000001,
   "audio_auto_level": true,
   "input_sensitivity": 1.0,
@@ -23,7 +17,7 @@
       "input_sensitivity": 1.0,
       "min_rms_transcribe": 0.005000000000000001,
       "audio_auto_level": true,
-      "updated_at": "2026-03-02T13:08:19"
+      "updated_at": "2026-04-09T16:04:52"
     },
     "meeting:1: Echo Cancelling Speakerphone (2": {
       "input_sensitivity": 1.0,
@@ -35,7 +29,7 @@
       "input_sensitivity": 1.0,
       "min_rms_transcribe": 0.005000000000000001,
       "audio_auto_level": true,
-      "updated_at": "2026-03-02T08:45:51"
+      "updated_at": "2026-04-09T16:04:42"
     }
   },
   "auto_generate_export_name": true,

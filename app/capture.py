@@ -12,6 +12,7 @@ import numpy as np
 
 from .diagnostic import write as diag
 from .audio_leveler import AudioLeveler, AudioLevelerConfig
+from . import dev_config
 import sounddevice as sd
 from scipy.io import wavfile
 from scipy.signal import resample
@@ -48,7 +49,8 @@ def _is_silent(chunk: np.ndarray, threshold: float = SILENCE_RMS_THRESHOLD) -> b
 def _build_leveler_config(leveler_settings: dict | None) -> AudioLevelerConfig:
     leveler_settings = leveler_settings or {}
     cfg = AudioLevelerConfig()
-    cfg.enabled = bool(leveler_settings.get("audio_auto_level", True))
+    # dev_config.LEVELING_ENABLED is the authoritative on/off; settings values tune parameters only.
+    cfg.enabled = dev_config.LEVELING_ENABLED
     cfg.input_sensitivity = max(0.5, min(3.0, float(leveler_settings.get("input_sensitivity", 0.8))))
     cfg.target_rms = max(0.01, min(0.2, float(leveler_settings.get("agc_target_rms", 0.035))))
     cfg.max_gain_db = max(6.0, min(30.0, float(leveler_settings.get("agc_max_boost_db", 9.0))))
@@ -78,25 +80,19 @@ def _take_front_mono_samples(buf: list, n_take: int) -> tuple[np.ndarray, list]:
 
 
 def capture_worker(device_index, chunk_queue, stop_event, leveler_settings=None, health_queue=None):
-    """Default microphone capture: fixed-duration chunks (loopback-aligned) or legacy VAD mode.
+    """Default microphone capture: routes to fixed or VAD worker based on dev_config.CHUNKING_MODE.
 
-    ``leveler_settings`` is the app settings dict. ``mic_chunking_mode`` selects:
-      - ``fixed`` (default): same ~5 s windows and silence gate as loopback, no AudioLeveler.
-      - ``vad``: prior behavior (1–3 s VAD chunks + leveler) for lower latency.
+    Pathway is set exclusively in app/dev_config.py — not from user-facing settings.
     """
-    settings = leveler_settings or {}
-    mode = str(settings.get("mic_chunking_mode", "fixed")).strip().lower()
-    if mode == "vad":
+    if dev_config.CHUNKING_MODE == "vad":
         capture_worker_vad(device_index, chunk_queue, stop_event, leveler_settings, health_queue)
     else:
         capture_worker_fixed(device_index, chunk_queue, stop_event, leveler_settings, health_queue)
 
 
 def capture_worker_fixed(device_index, chunk_queue, stop_event, leveler_settings=None, health_queue=None):
-    """16 kHz mic capture: fixed-duration chunks, no leveler — aligned with capture_worker_loopback."""
-    settings = leveler_settings or {}
-    duration_sec = float(settings.get("chunk_duration_sec", CHUNK_DURATION_SEC))
-    duration_sec = max(3.0, min(30.0, duration_sec))
+    """16 kHz mic capture: fixed-duration chunks.  Duration from dev_config.CHUNK_DURATION_SEC."""
+    duration_sec = max(3.0, min(30.0, dev_config.CHUNK_DURATION_SEC))
     chunk_samples = int(SAMPLE_RATE * duration_sec)
 
     block_queue: queue.Queue = queue.Queue(maxsize=200)
@@ -181,21 +177,16 @@ def capture_worker_fixed(device_index, chunk_queue, stop_event, leveler_settings
 
 
 def capture_worker_vad(device_index, chunk_queue, stop_event, leveler_settings=None, health_queue=None):
-    """Record using streaming input with VAD-based silence chunking for low-latency transcription.
-
-    Uses sd.InputStream (non-blocking callback) instead of sd.rec() so chunks are emitted
-    at speech boundaries (1–3 s) rather than on a fixed 5-second clock. Each chunk is
-    written to a unique temp file to avoid race conditions with the transcription worker.
-    """
+    """16 kHz mic capture: VAD silence-based chunking.  Leveling from dev_config.LEVELING_ENABLED."""
     leveler = AudioLeveler(_build_leveler_config(leveler_settings))
     block_queue: queue.Queue = queue.Queue(maxsize=200)
 
-    # VAD / chunking parameters (tuned for responsiveness)
-    BLOCK_SIZE = 512                                        # ~32 ms per block at 16 kHz
-    MIN_CHUNK_FRAMES = int(SAMPLE_RATE * 1.0)              # emit after ≥ 1 s of speech
-    MAX_CHUNK_FRAMES = int(SAMPLE_RATE * 3.0)              # force-emit after 3 s
-    SILENCE_TRIGGER_FRAMES = int(SAMPLE_RATE * 0.35)       # 350 ms of silence → emit
-    HANGOVER_BLOCKS = 5                                     # ~160 ms hangover after speech
+    # VAD / chunking parameters — all driven by dev_config
+    BLOCK_SIZE = 512
+    MIN_CHUNK_FRAMES     = int(SAMPLE_RATE * max(0.5, dev_config.VAD_MIN_CHUNK_SEC))
+    MAX_CHUNK_FRAMES     = int(SAMPLE_RATE * max(1.0, dev_config.VAD_MAX_CHUNK_SEC))
+    SILENCE_TRIGGER_FRAMES = int(SAMPLE_RATE * max(0.1, dev_config.VAD_SILENCE_SEC))
+    HANGOVER_BLOCKS = 5
 
     temp_dir = os.path.join(os.environ.get("TEMP", tempfile.gettempdir()), "MeetingsChunks")
     os.makedirs(temp_dir, exist_ok=True)
@@ -303,9 +294,12 @@ def capture_worker_vad(device_index, chunk_queue, stop_event, leveler_settings=N
                 pass
 
 
-def capture_worker_loopback(loopback_device_index, chunk_queue, stop_event, level_queue=None):
-    """Record from WASAPI loopback only (PyAudioWPatch). Puts chunk paths into chunk_queue.
-    If level_queue is provided, pushes RMS (float) per read block for a level indicator."""
+def capture_worker_loopback(loopback_device_index, chunk_queue, stop_event, level_queue=None, settings=None):
+    """WASAPI loopback (PyAudioWPatch): resample to 16 kHz mono.
+
+    Pathway is identical to Default input — fixed windows or VAD — both controlled by
+    dev_config.CHUNKING_MODE and dev_config.CHUNK_DURATION_SEC.  Loopback is never leveled.
+    """
     if sys.platform != "win32":
         try:
             chunk_queue.put_nowait(("error", "Loopback is only supported on Windows with pyaudiowpatch."))
@@ -320,6 +314,97 @@ def capture_worker_loopback(loopback_device_index, chunk_queue, stop_event, leve
         except queue.Full:
             pass
         return
+
+    # Fixed-window constants — only used when CHUNKING_MODE == "fixed".
+    # CHUNK_DURATION_SEC has no effect on the VAD path.
+    if dev_config.CHUNKING_MODE != "vad":
+        _fixed_duration_sec = max(3.0, min(30.0, dev_config.CHUNK_DURATION_SEC))
+        chunk_samples_16k = int(SAMPLE_RATE * _fixed_duration_sec)
+    else:
+        chunk_samples_16k = 0  # unused in VAD path
+
+    # VAD tuning — only used when CHUNKING_MODE == "vad".
+    VAD_BLOCK_SIZE         = 512
+    VAD_MIN_FRAMES         = int(SAMPLE_RATE * max(0.5, dev_config.VAD_MIN_CHUNK_SEC))
+    VAD_MAX_FRAMES         = int(SAMPLE_RATE * max(1.0, dev_config.VAD_MAX_CHUNK_SEC))
+    VAD_SILENCE_FRAMES     = int(SAMPLE_RATE * max(0.1, dev_config.VAD_SILENCE_SEC))
+    VAD_HANGOVER_BLOCKS    = 5
+
+    temp_dir = os.path.join(os.environ.get("TEMP", tempfile.gettempdir()), "MeetingsChunks")
+    os.makedirs(temp_dir, exist_ok=True)
+
+    def _emit(mono: np.ndarray, worker_tag: str):
+        mono = np.clip(mono.astype(np.float32), -1.0, 1.0)
+        if _is_silent(mono):
+            return
+        rms = _rms32(mono)
+        if rms < SILENCE_RMS_THRESHOLD * 0.5:
+            return
+        chunk_int16 = (np.clip(mono, -1.0, 1.0) * 32767).astype(np.int16)
+        wav_path = os.path.join(temp_dir, f"lb_{uuid.uuid4().hex}.wav")
+        wavfile.write(wav_path, SAMPLE_RATE, chunk_int16)
+        try:
+            chunk_queue.put((wav_path, rms), timeout=1.0)
+            diag("chunk_queued", path=wav_path, worker=worker_tag, rms_out=round(rms, 6))
+        except queue.Full:
+            pass
+
+    # Fixed-window state
+    fix_buf: list = []
+    fix_frames = 0
+
+    def _feed_fixed(y: np.ndarray):
+        nonlocal fix_buf, fix_frames
+        fix_buf.append(y)
+        fix_frames += len(y)
+        while fix_frames >= chunk_samples_16k:
+            mono, fix_buf = _take_front_mono_samples(fix_buf, chunk_samples_16k)
+            fix_frames = sum(len(x) for x in fix_buf)
+            _emit(mono, "loopback_fixed")
+
+    # VAD state (inline — mirrors capture_worker_vad)
+    vad_buf: list           = []
+    vad_buf_frames: int     = 0
+    vad_consecutive_silent  = 0
+    vad_noise_floor         = SILENCE_RMS_THRESHOLD
+    vad_hangover_left       = 0
+
+    def _feed_vad(y: np.ndarray):
+        nonlocal vad_buf, vad_buf_frames, vad_consecutive_silent, vad_noise_floor, vad_hangover_left
+        for i in range(0, len(y), VAD_BLOCK_SIZE):
+            block = y[i : i + VAD_BLOCK_SIZE]
+            block_rms = _rms32(block)
+            learn_upper = max(SILENCE_RMS_THRESHOLD * 5.0, vad_noise_floor * 1.7)
+            if block_rms <= learn_upper:
+                vad_noise_floor = 0.96 * vad_noise_floor + 0.04 * block_rms
+            adaptive_threshold = max(SILENCE_RMS_THRESHOLD, vad_noise_floor * 2.5)
+            is_silent = block_rms < adaptive_threshold
+            if is_silent:
+                if vad_hangover_left > 0:
+                    vad_hangover_left -= 1
+                    is_silent = False
+            else:
+                vad_hangover_left = VAD_HANGOVER_BLOCKS
+                vad_consecutive_silent = 0
+            vad_buf.append(block)
+            vad_buf_frames += len(block)
+            if is_silent:
+                vad_consecutive_silent += len(block)
+            if vad_buf_frames >= VAD_MAX_FRAMES:
+                audio = np.concatenate(vad_buf).astype(np.float32)
+                vad_buf, vad_buf_frames, vad_consecutive_silent = [], 0, 0
+                _emit(audio, "loopback_vad")
+            elif vad_buf_frames >= VAD_MIN_FRAMES and vad_consecutive_silent >= VAD_SILENCE_FRAMES:
+                audio = np.concatenate(vad_buf).astype(np.float32)
+                vad_buf, vad_buf_frames, vad_consecutive_silent = [], 0, 0
+                _emit(audio, "loopback_vad")
+
+    def _feed_16k(y: np.ndarray):
+        if dev_config.CHUNKING_MODE == "vad":
+            _feed_vad(y)
+        else:
+            _feed_fixed(y)
+
     try:
         with pyaudio.PyAudio() as p:
             if loopback_device_index is not None:
@@ -335,55 +420,56 @@ def capture_worker_loopback(loopback_device_index, chunk_queue, stop_event, leve
                 dev = default_speakers
             rate = int(dev["defaultSampleRate"])
             ch = int(dev["maxInputChannels"])
-            chunk_frames_loopback = int(rate * CHUNK_DURATION_SEC) * ch
-            while not stop_event.is_set():
-                buf = []
-                with p.open(
-                    format=pyaudio.paInt16,
-                    channels=ch,
-                    rate=rate,
-                    frames_per_buffer=1024,
-                    input=True,
-                    input_device_index=dev["index"],
-                ) as stream:
-                    while len(buf) * 1024 < chunk_frames_loopback and not stop_event.is_set():
+            native_batch = max(int(rate * 0.05), 512)
+            pending = np.array([], dtype=np.float32)
+
+            with p.open(
+                format=pyaudio.paInt16,
+                channels=ch,
+                rate=rate,
+                frames_per_buffer=1024,
+                input=True,
+                input_device_index=dev["index"],
+            ) as stream:
+                while not stop_event.is_set():
+                    try:
+                        data = stream.read(1024, exception_on_overflow=False)
+                    except Exception:
+                        break
+                    block = np.frombuffer(data, dtype=np.int16)
+                    if block.size == 0:
+                        continue
+                    raw = block.reshape(-1, ch).astype(np.float64) / 32768.0
+                    mono_native = np.mean(raw, axis=1).astype(np.float32)
+                    pending = np.concatenate([pending, mono_native])
+                    if level_queue is not None and mono_native.size:
                         try:
-                            data = stream.read(1024, exception_on_overflow=False)
-                            block = np.frombuffer(data, dtype=np.int16)
-                            buf.append(block)
-                            if level_queue is not None:
-                                mono = block.reshape(-1, ch).astype(np.float32) / 32768.0
-                                if mono.size:
-                                    rms = _rms32(mono)
-                                    try:
-                                        level_queue.put_nowait(rms)
-                                    except queue.Full:
-                                        pass
-                        except Exception:
-                            break
-                if stop_event.is_set():
-                    break
-                if not buf:
-                    continue
-                raw = np.concatenate(buf)[:chunk_frames_loopback]
-                raw = raw.reshape(-1, ch).astype(np.float64) / 32768.0
-                mono = np.mean(raw, axis=1).astype(np.float32)
-                if rate != SAMPLE_RATE:
-                    num_out = int(round(len(mono) * SAMPLE_RATE / rate))
-                    mono = resample(mono, num_out).astype(np.float32)
-                mono = mono[:CHUNK_SAMPLES]
-                if len(mono) < CHUNK_SAMPLES:
-                    mono = np.pad(mono, (0, CHUNK_SAMPLES - len(mono)))
-                if _is_silent(mono):
-                    continue
-                rms = _rms32(mono)
-                chunk_int16 = (np.clip(mono, -1.0, 1.0) * 32767).astype(np.int16)
-                wavfile.write(str(CHUNK_PATH), SAMPLE_RATE, chunk_int16)
-                try:
-                    chunk_queue.put((str(CHUNK_PATH), rms), timeout=1.0)
-                    diag("chunk_queued", path=str(CHUNK_PATH), worker="loopback")
-                except queue.Full:
-                    pass
+                            level_queue.put_nowait(_rms32(mono_native))
+                        except queue.Full:
+                            pass
+                    while len(pending) >= native_batch and not stop_event.is_set():
+                        piece = pending[:native_batch]
+                        pending = pending[native_batch:]
+                        n_out = int(round(len(piece) * SAMPLE_RATE / rate))
+                        _feed_16k(resample(piece, n_out).astype(np.float32))
+
+                if len(pending) > 0:
+                    n_out = int(round(len(pending) * SAMPLE_RATE / rate))
+                    _feed_16k(resample(pending, n_out).astype(np.float32))
+
+                # Flush remainder
+                if dev_config.CHUNKING_MODE == "vad":
+                    if vad_buf_frames > 0:
+                        _emit(np.concatenate(vad_buf).astype(np.float32), "loopback_vad")
+                else:
+                    while fix_frames >= chunk_samples_16k:
+                        mono, fix_buf = _take_front_mono_samples(fix_buf, chunk_samples_16k)
+                        fix_frames = sum(len(x) for x in fix_buf)
+                        _emit(mono, "loopback_fixed")
+                    if fix_frames > 0:
+                        mono, fix_buf = _take_front_mono_samples(fix_buf, fix_frames)
+                        _emit(mono, "loopback_fixed")
+
     except Exception as e:
         diag("capture_error", worker="loopback", error=str(e))
         if not stop_event.is_set():

@@ -1,0 +1,7 @@
+# VAD_MIN_CHUNK_SEC: float = 5.0
+# VAD_MAX_CHUNK_SEC: float = 10.0
+# VAD_SILENCE_SEC: float = 0.25
+# mode: automated (vad inline replay)
+# chunks: 5
+
+Hi, this is a short test clip for my meeting transcription app. Today is Tuesday, April 7th, 2026. I'm checking three things. Clear speech, short pauses, and how numbers sound, like room twelve B. Version 3.0 and fifty percent. Please save this take as Benchmark underscore sample dot wave. Thanks for listening. That's the end of the test.

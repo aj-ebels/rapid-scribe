@@ -23,6 +23,7 @@ except ImportError:
 
 from . import __version__ as app_version
 from .settings import load_settings, save_settings, AUDIO_MODE_DEFAULT, AUDIO_MODE_LOOPBACK, AUDIO_MODE_MEETING
+from . import dev_config as _dev_cfg
 from .audio_leveler import AudioLevelerConfig
 from .devices import list_audio_devices, list_loopback_devices, get_default_monitor_device, get_effective_audio_device
 from .prompts import load_prompts, add_prompt, update_prompt, delete_prompt, get_prompt_by_id, TRANSCRIPT_PLACEHOLDER, MANUAL_NOTES_PLACEHOLDER
@@ -474,21 +475,17 @@ def start_stop(app):
             app.log.see("end")
             return
         try:
-            use_silence = app.settings.get("use_silence_chunking", True)
-            min_sec = app.settings.get("min_chunk_sec", 1.5)
-            max_sec = app.settings.get("max_chunk_sec", 6.0)
-            silence_sec = app.settings.get("silence_duration_sec", 0.35)
-            if not isinstance(min_sec, (int, float)) or min_sec < 0.5 or min_sec > 10:
-                min_sec = 1.0
-            if not isinstance(max_sec, (int, float)) or max_sec < 1 or max_sec > 60:
-                max_sec = 6.0
-            if not isinstance(silence_sec, (int, float)) or silence_sec < 0.15 or silence_sec > 2:
-                silence_sec = 0.35
-            if min_sec > max_sec:
-                max_sec = min_sec
-            chunk_sec = app.settings.get("chunk_duration_sec", 5.0)  # fallback for fixed mode
-            if not isinstance(chunk_sec, (int, float)) or chunk_sec < 3 or chunk_sec > 30:
-                chunk_sec = CHUNK_DURATION_SEC
+            use_silence = _dev_cfg.CHUNKING_MODE == "vad"
+            if use_silence:
+                # VAD path: CHUNK_DURATION_SEC is irrelevant; use VAD-specific params.
+                chunk_sec   = None
+                min_sec     = max(0.5, _dev_cfg.VAD_MIN_CHUNK_SEC)
+                max_sec     = max(min_sec, _dev_cfg.VAD_MAX_CHUNK_SEC)
+                silence_sec = max(0.1, _dev_cfg.VAD_SILENCE_SEC)
+            else:
+                # Fixed path: only CHUNK_DURATION_SEC matters; VAD params are irrelevant.
+                chunk_sec   = max(3.0, min(30.0, _dev_cfg.CHUNK_DURATION_SEC))
+                min_sec = max_sec = silence_sec = None
             app.mixer = AudioMixer(
                 sample_rate=CAPTURE_SAMPLE_RATE_MEETING,
                 frames_per_read=FRAMES_PER_READ_MEETING,
@@ -502,18 +499,23 @@ def start_stop(app):
                     pass
             app.mixer.set_level_callback(_push_level)
             app.mixer.start(loopback_device_index=loopback_idx, mic_device_index=mic_idx)
-            app.recorder = ChunkRecorder(
+            _recorder_kwargs = dict(
                 sample_rate=app.mixer.sample_rate,
-                chunk_duration_sec=float(chunk_sec),
                 asr_sample_rate=SAMPLE_RATE,
                 on_chunk_ready=lambda wav_path, rms: meeting_chunk_ready(app, wav_path, rms),
                 use_silence_chunking=use_silence,
-                min_chunk_sec=float(min_sec),
-                max_chunk_sec=float(max_sec),
-                silence_duration_sec=float(silence_sec),
                 leveler_config=_build_leveler_config(app.settings),
                 adaptive_silence=bool(app.settings.get("adaptive_audio_gating", True)),
             )
+            if use_silence:
+                _recorder_kwargs.update(
+                    min_chunk_sec=float(min_sec),
+                    max_chunk_sec=float(max_sec),
+                    silence_duration_sec=float(silence_sec),
+                )
+            else:
+                _recorder_kwargs["chunk_duration_sec"] = float(chunk_sec)
+            app.recorder = ChunkRecorder(**_recorder_kwargs)
             app.mixer.set_stereo_callback(app.recorder.push_stereo)
             app.capture_thread = None
             app.capture_threads = []
@@ -2239,21 +2241,14 @@ def main(splash_window=None):
     ctk.CTkLabel(settings_card, text="Audio leveling", font=ctk.CTkFont(family=UI_FONT_FAMILY, size=F.header, weight="bold")).pack(anchor="w", pady=(0, 4))
     ctk.CTkLabel(
         settings_card,
-        text="Helps normalize very quiet laptop mics and very hot external mics. Used for Meeting mode and for Default input when “VAD + leveler” chunking is selected. Fixed-window Default input matches system-audio (loopback) processing — no leveling on that path.",
+        text="Leveling on/off is a developer toggle — edit app/dev_config.py (LEVELING_ENABLED) and restart. Sensitivity and silence guard below are saved per-device for calibration.",
         font=ctk.CTkFont(family=UI_FONT_FAMILY, size=F.small),
         text_color="gray",
         wraplength=520,
         anchor="w",
     ).pack(anchor="w", pady=(0, 6))
-    app.audio_auto_level_var = ctk.BooleanVar(value=bool(app.settings.get("audio_auto_level", True)))
-    app.audio_auto_level_switch = ctk.CTkSwitch(
-        settings_card,
-        text="Auto level microphone (AGC + limiter)",
-        variable=app.audio_auto_level_var,
-        onvalue=True,
-        offvalue=False,
-    )
-    app.audio_auto_level_switch.pack(anchor="w", pady=(0, 6))
+    # Hidden var kept for calibration/profile code; on/off controlled by dev_config.LEVELING_ENABLED.
+    app.audio_auto_level_var = ctk.BooleanVar(value=True)
     app.input_sensitivity_var = ctk.DoubleVar(value=max(0.5, min(3.0, float(app.settings.get("input_sensitivity", 1.0)))))
     app.input_sensitivity_label_var = ctk.StringVar(value="")
     def _render_input_sensitivity_label():
@@ -2280,30 +2275,14 @@ def main(splash_window=None):
     app.audio_mode_menu = ctk.CTkOptionMenu(settings_card, values=mode_values, variable=app.audio_mode_var, width=320, font=ctk.CTkFont(family=UI_FONT_FAMILY, size=F.small), command=lambda v: _apply_settings(app))
     app.audio_mode_menu.pack(anchor="w", pady=(0, 6))
 
-    mic_chunk_labels = ("Fixed windows (recommended)", "VAD + leveler (lower latency)")
-    mic_chunk_to_mode = {mic_chunk_labels[0]: "fixed", mic_chunk_labels[1]: "vad"}
-    mic_chunk_from_mode = {v: k for k, v in mic_chunk_to_mode.items()}
-    _mcm = str(app.settings.get("mic_chunking_mode", "fixed")).lower()
-    if _mcm not in ("fixed", "vad"):
-        _mcm = "fixed"
-    app.mic_chunking_var = ctk.StringVar(value=mic_chunk_from_mode.get(_mcm, mic_chunk_labels[0]))
     ctk.CTkLabel(
         settings_card,
-        text="Default input chunking (when Capture mode = Default input)",
+        text="Chunking pathway and noise leveling are developer settings — edit app/dev_config.py and restart to change.",
         font=ctk.CTkFont(family=UI_FONT_FAMILY, size=F.small),
         text_color="gray",
         wraplength=520,
         anchor="w",
-    ).pack(anchor="w", pady=(0, 4))
-    app.mic_chunking_menu = ctk.CTkOptionMenu(
-        settings_card,
-        values=list(mic_chunk_labels),
-        variable=app.mic_chunking_var,
-        width=320,
-        font=ctk.CTkFont(family=UI_FONT_FAMILY, size=F.small),
-        command=lambda _v: _apply_settings(app),
-    )
-    app.mic_chunking_menu.pack(anchor="w", pady=(0, UI_PAD_LG))
+    ).pack(anchor="w", pady=(0, UI_PAD_LG))
 
     ctk.CTkLabel(settings_card, text="Meeting microphone (used when Capture mode = Meeting)", font=ctk.CTkFont(family=UI_FONT_FAMILY, size=F.small, weight="bold")).pack(anchor="w", pady=(UI_PAD, 4))
     # Device lists loaded in background so main thread never blocks on enumeration.
@@ -2452,15 +2431,11 @@ def main(splash_window=None):
                 pass
         _render_input_sensitivity_label()
         _render_min_rms_label()
-        _mic_chunk_label = app.mic_chunking_var.get() if getattr(app, "mic_chunking_var", None) else mic_chunk_labels[0]
-        _mic_chunk_mode = mic_chunk_to_mode.get(_mic_chunk_label, "fixed")
         app.settings = {
             **app.settings,
             "audio_mode": mode,
             "meeting_mic_device": meeting_idx,
             "loopback_device_index": loopback_idx,
-            "mic_chunking_mode": _mic_chunk_mode,
-            "audio_auto_level": bool(app.audio_auto_level_var.get()),
             "input_sensitivity": max(0.5, min(3.0, float(app.input_sensitivity_var.get()))),
             "min_rms_transcribe": max(0.001, min(0.05, float(app.min_rms_var.get()))),
             "adaptive_audio_gating": True,
@@ -2468,7 +2443,6 @@ def main(splash_window=None):
         _save_profile_from_current_controls()
         save_settings(app.settings)
 
-    app.audio_auto_level_switch.configure(command=lambda: _apply_settings(app))
     app.input_sensitivity_slider.configure(command=lambda _v: _apply_settings(app))
     app.min_rms_slider.configure(command=lambda _v: _apply_settings(app))
 
