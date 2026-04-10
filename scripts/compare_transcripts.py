@@ -26,11 +26,13 @@ Workflow
 
 5. Run this script:
        python scripts/compare_transcripts.py
+       python scripts/compare_transcripts.py --results fixtures/manual_eval/results2 --ref "fixtures/manual_eval/reference 2.txt"
 
    Optional flags:
        --ref  path/to/other_reference.txt   (default: fixtures/manual_eval/reference.txt)
        --dir  path/to/results/              (default: fixtures/manual_eval/results)
        --json                               emit JSON to stdout instead of text table
+       --results  path/to/results/           (default: fixtures/manual_eval/results)
 """
 from __future__ import annotations
 
@@ -187,7 +189,8 @@ def main(argv=None):
         help="Reference (ground-truth) script file.",
     )
     parser.add_argument(
-        "--dir",
+        "--dir", "--results",
+        dest="dir",
         default=str(_root() / "fixtures" / "manual_eval" / "results"),
         help="Folder containing captured transcript .txt files.",
     )

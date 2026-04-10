@@ -15,6 +15,13 @@ Usage
     python scripts/run_vad_scenarios.py --skip-existing     # skip already-saved results
     python scripts/run_vad_scenarios.py --wav path/to.wav   # use a different WAV
     python scripts/run_vad_scenarios.py --dry-run           # print what would run, exit
+    python scripts/run_vad_scenarios.py --results fixtures/manual_eval/results2
+    python scripts/run_vad_scenarios.py --ref fixtures/manual_eval/reference 2.txt
+
+    python scripts/run_vad_scenarios.py
+        --wav samples/benchmark_sample2.wav
+        --results fixtures/manual_eval/results2
+        --ref "fixtures/manual_eval/reference 2.txt"
 
 Scenario format (see SCENARIOS below)
 --------------------------------------
@@ -226,6 +233,10 @@ def run_scenario(s: dict, audio: np.ndarray, model) -> str:
 def main(argv=None):
     parser = argparse.ArgumentParser(description="Automated VAD parameter sweep.")
     parser.add_argument("--wav", default=str(_DEFAULT_WAV), help="WAV file to replay.")
+    parser.add_argument("--results", default=str(_RESULTS_DIR),
+                        help="Folder to write result .txt files into (default: fixtures/manual_eval/results).")
+    parser.add_argument("--ref", default=None,
+                        help="Reference text file for the comparison report (default: auto-detected from fixtures/manual_eval/).")
     parser.add_argument("--skip-existing", action="store_true",
                         help="Skip scenarios whose result file already exists.")
     parser.add_argument("--dry-run", action="store_true",
@@ -237,11 +248,12 @@ def main(argv=None):
         print(f"ERROR: WAV file not found: {wav_path}", file=sys.stderr)
         sys.exit(1)
 
-    _RESULTS_DIR.mkdir(parents=True, exist_ok=True)
+    results_dir = Path(args.results)
+    results_dir.mkdir(parents=True, exist_ok=True)
 
     if args.dry_run:
         print(f"WAV: {wav_path}")
-        print(f"Results dir: {_RESULTS_DIR}\n")
+        print(f"Results dir: {results_dir}\n")
         print(f"{'#':>3}  {'Label':<22}  {'Mode':<6}  Params")
         print("  " + "-" * 60)
         for i, s in enumerate(SCENARIOS, 1):
@@ -249,7 +261,7 @@ def main(argv=None):
                 params = f"min={s['min']}  max={s['max']}  sil={s['sil']}"
             else:
                 params = f"dur={s['dur']}"
-            result_path = _RESULTS_DIR / f"{s['label']}.txt"
+            result_path = results_dir / f"{s['label']}.txt"
             exists = " (exists)" if result_path.exists() else ""
             print(f"  {i:>3}  {s['label']:<22}  {s['mode']:<6}  {params}{exists}")
         sys.exit(0)
@@ -274,7 +286,7 @@ def main(argv=None):
 
     for i, s in enumerate(SCENARIOS, 1):
         label = s["label"]
-        result_path = _RESULTS_DIR / f"{label}.txt"
+        result_path = results_dir / f"{label}.txt"
 
         if args.skip_existing and result_path.is_file():
             print(f"  [{i:>2}/{total}] SKIP  {label} (file exists)")
@@ -297,17 +309,10 @@ def main(argv=None):
         ran += 1
 
     print(f"\nDone. {ran} ran, {skipped} skipped.")
-
-    # ── Print comparison ─────────────────────────────────────────────────
-    print("\n" + "=" * 72)
-    print("RESULTS")
-    print("=" * 72)
-    try:
-        from scripts.compare_transcripts import main as compare_main
-        compare_main([])
-    except Exception as e:
-        print(f"Could not run comparison: {e}")
-        print(f"Run manually: python scripts/compare_transcripts.py")
+    cmd = f'python scripts/compare_transcripts.py --results "{results_dir}"'
+    if args.ref:
+        cmd += f' --ref "{args.ref}"'
+    print(f"\nTo compare:  {cmd}")
 
 
 if __name__ == "__main__":

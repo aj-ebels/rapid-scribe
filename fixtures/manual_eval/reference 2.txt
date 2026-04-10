@@ -12,17 +12,17 @@ discrete chunks. Each chunk is passed to a neural network that converts the
 spoken waveform into a sequence of text tokens. The output is then joined
 and displayed in the interface in real time.
 
-Some geography.
+Now on to some geography.
 The Mississippi River flows south through the heartland before emptying into
 the Gulf of Mexico near New Orleans. The Appalachian Mountains stretch from
 Alabama all the way up through Maine and into eastern Canada.
 
-Some finance vocabulary.
+Now for some finance vocabulary.
 The quarterly earnings report showed revenue growth of twelve percent year
 over year. Operating expenses remained stable while net profit margins expanded
 by two percentage points compared with the previous quarter.
 
-A few names and places.
+Now a few names and places.
 Christopher attended the conference in Edinburgh alongside colleagues from
 Melbourne and Copenhagen. Their paper on distributed systems was well received
 by the audience and has since been cited widely in the literature.
