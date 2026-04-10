@@ -60,8 +60,20 @@ from pathlib import Path
 # ---------------------------------------------------------------------------
 
 SPOKEN_EQUIVALENTS: list[tuple[str, ...]] = [
-    # Percentages
-    ("fifty percent",       "50 percent", "50"),     # "50%" → "50" after punct strip
+    # Percentages  ("X%" → "X" after punct strip; "X percent" is spoken form)
+    ("twelve percent",      "12 percent", "12"),
+    ("fifty percent",       "50 percent", "50"),
+
+    # Cardinal numbers
+    ("two",                 "2"),
+    ("three",               "3"),
+    ("four",                "4"),
+    ("five",                "5"),
+    ("six",                 "6"),
+    ("seven",               "7"),
+    ("eight",               "8"),
+    ("nine",                "9"),
+    ("ten",                 "10"),
 
     # Years
     ("twenty twenty six",   "2026"),
@@ -70,7 +82,7 @@ SPOKEN_EQUIVALENTS: list[tuple[str, ...]] = [
     ("seventh",             "7th"),                  # covers "april seventh" / "april 7th"
 
     # Versions / decimals
-    ("three point oh",      "three point zero", "3 0", "3"),  # "3.0" → "3 0" after strip
+    ("three point oh",      "three point zero", "3 0"),  # "3.0" → "3 0" after strip
 
     # Room designations
     ("twelve b",            "12 b", "12b"),
@@ -348,6 +360,85 @@ def main(argv=None):
         _avg_table("VAD_MIN_CHUNK_SEC", "VAD_MIN_CHUNK_SEC")
         _avg_table("VAD_MAX_CHUNK_SEC", "VAD_MAX_CHUNK_SEC")
         _avg_table("VAD_SILENCE_SEC",   "VAD_SILENCE_SEC")
+
+        # ── Min × Max interaction grid ────────────────────────────────────
+        from collections import defaultdict
+        min_vals = sorted({_num(r["meta"], "VAD_MIN_CHUNK_SEC") for r in vad_rows if _num(r["meta"], "VAD_MIN_CHUNK_SEC")}, key=float)
+        max_vals = sorted({_num(r["meta"], "VAD_MAX_CHUNK_SEC") for r in vad_rows if _num(r["meta"], "VAD_MAX_CHUNK_SEC")}, key=float)
+        if min_vals and max_vals:
+            cell: dict[tuple, list] = defaultdict(list)
+            for r in vad_rows:
+                mn = _num(r["meta"], "VAD_MIN_CHUNK_SEC")
+                mx = _num(r["meta"], "VAD_MAX_CHUNK_SEC")
+                if mn and mx:
+                    cell[(mn, mx)].append(r["wer"])
+            col_w = 7
+            print(f"\n  Min x Max avg WER  (averaged over all silence values)")
+            header_cells = "".join(f"{v:>{col_w}}" for v in max_vals)
+            print(f"  {'Min \\ Max':<9}{header_cells}")
+            print("  " + "-" * (9 + col_w * len(max_vals)))
+            for mn in min_vals:
+                row_cells = ""
+                for mx in max_vals:
+                    bucket = cell.get((mn, mx), [])
+                    if bucket:
+                        avg = sum(bucket) / len(bucket)
+                        row_cells += f"{avg:>{col_w}.4f}"
+                    else:
+                        row_cells += f"{'--':>{col_w}}"
+                print(f"  {mn:<9}{row_cells}")
+
+        # ── WER distribution buckets ──────────────────────────────────────
+        thresholds = [
+            ("Perfect  (0.00)",       lambda w: w == 0.0),
+            ("Excellent (<=0.03)",     lambda w: 0.0 < w <= 0.03),
+            ("Good     (<=0.08)",      lambda w: 0.03 < w <= 0.08),
+            ("Fair     (<=0.15)",      lambda w: 0.08 < w <= 0.15),
+            ("Poor     (> 0.15)",      lambda w: w > 0.15),
+        ]
+        n_vad = len(vad_rows)
+        print(f"\n  WER distribution  ({n_vad} vad configs)")
+        print(f"  {'Band':<22}  {'Count':>5}  {'Pct':>6}")
+        print("  " + "-" * 36)
+        for label_t, fn in thresholds:
+            count = sum(1 for r in vad_rows if fn(r["wer"]))
+            pct = 100 * count / n_vad if n_vad else 0
+            bar_filled = "#" * int(pct / 5)
+            print(f"  {label_t:<22}  {count:>5}  {pct:>5.1f}%  {bar_filled}")
+
+        # ── Parameter sensitivity ─────────────────────────────────────────
+        def _param_spread(key: str) -> float:
+            groups: dict[str, list] = defaultdict(list)
+            for r in vad_rows:
+                v = _num(r["meta"], key)
+                if v:
+                    groups[v].append(r["wer"])
+            avgs = [sum(g) / len(g) for g in groups.values()]
+            return max(avgs) - min(avgs) if len(avgs) >= 2 else 0.0
+
+        sensitivities = [
+            ("VAD_MIN_CHUNK_SEC", _param_spread("VAD_MIN_CHUNK_SEC")),
+            ("VAD_MAX_CHUNK_SEC", _param_spread("VAD_MAX_CHUNK_SEC")),
+            ("VAD_SILENCE_SEC",   _param_spread("VAD_SILENCE_SEC")),
+        ]
+        sensitivities.sort(key=lambda x: x[1], reverse=True)
+        print(f"\n  Parameter sensitivity  (WER spread across each param's values)")
+        print(f"  {'Parameter':<22}  {'WER spread':>10}  Impact")
+        print("  " + "-" * 48)
+        for i, (pname, spread) in enumerate(sensitivities):
+            impact = ["Highest", "Middle", "Lowest"][i]
+            bar_s = "#" * int(spread * 200)
+            print(f"  {pname:<22}  {spread:>10.4f}  {impact}  {bar_s}")
+
+        # ── Best config callout ───────────────────────────────────────────
+        best = min(vad_rows, key=lambda r: (r["wer"], r["cer"]))
+        print(f"\n  Best VAD config:  {best['label']}")
+        print(f"    WER {best['wer']:.4f}  CER {best['cer']:.4f}"
+              f"  min={_num(best['meta'], 'VAD_MIN_CHUNK_SEC')}"
+              f"  max={_num(best['meta'], 'VAD_MAX_CHUNK_SEC')}"
+              f"  sil={_num(best['meta'], 'VAD_SILENCE_SEC')}"
+              f"  chunks={best['meta'].get('chunks', '?')}")
+
         print()
         print(bar)
 

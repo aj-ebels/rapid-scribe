@@ -50,8 +50,8 @@ from scipy.signal import resample as scipy_resample
 # Scenarios — edit this list to define which combinations to sweep
 # ---------------------------------------------------------------------------
 
-_min_set = [2, 3, 4, 5, 6, 7]
-_max_set = [10, 15, 20, 25, 30]
+_min_set = [1.5, 2, 3, 4, 5, 6, 7]
+_max_set = [5, 7.5, 10, 15, 20, 25, 30]
 _sil_set = [0.25, 0.50, 0.75, 1.00]
 
 SCENARIOS: list[dict] = [
