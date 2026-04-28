@@ -83,3 +83,29 @@ def test_download_formats_hub_lookup_error_after_retry(monkeypatch):
     assert ok is False
     assert "could not reach Hugging Face" in err
     assert "appropriate snapshot folder" not in err
+
+
+def test_standard_model_falls_back_to_direct_download(monkeypatch):
+    hub_calls = []
+    direct_calls = []
+
+    def fake_hub_download(_model_id):
+        hub_calls.append(True)
+        raise RuntimeError("Cannot send a request, as the client has been closed.")
+
+    def fake_direct_download(model_id):
+        direct_calls.append(model_id)
+
+    monkeypatch.setattr(transcription, "_reset_huggingface_hub_http_client", lambda: None)
+    monkeypatch.setattr(transcription, "_download_transcription_model_once", fake_hub_download)
+    monkeypatch.setattr(transcription, "_download_int8_repo_files_to_app_dir", fake_direct_download)
+    monkeypatch.setattr(transcription, "clear_transcription_model_cache", lambda: None)
+    monkeypatch.setattr(transcription, "_invalidate_model_scan_cache", lambda: None)
+    monkeypatch.setattr(transcription, "diag", lambda *args, **kwargs: None)
+
+    ok, err = transcription.download_transcription_model(transcription.STANDARD_TRANSCRIPTION_MODEL)
+
+    assert ok is True
+    assert err is None
+    assert len(hub_calls) == 2
+    assert direct_calls == [transcription.STANDARD_TRANSCRIPTION_MODEL]

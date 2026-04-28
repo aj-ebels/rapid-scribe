@@ -6,8 +6,11 @@ import io
 import json
 import os
 import queue
+import shutil
+import subprocess
 import sys
 import time
+import urllib.request
 from pathlib import Path
 
 from .settings import DEFAULT_TRANSCRIPTION_MODEL, load_settings
@@ -59,7 +62,9 @@ def get_transcription_model(model_id=None):
     """Load and return the ONNX ASR model. Cached per model_id."""
     global _parakeet_model, _parakeet_model_id
     model_id = model_id or PARAKEET_MODEL
-    if _parakeet_model is None or _parakeet_model_id != model_id:
+    local_model_path = _get_app_model_dir(model_id) if _is_app_model_installed(model_id) else None
+    cache_key = f"{model_id}|{local_model_path}" if local_model_path is not None else model_id
+    if _parakeet_model is None or _parakeet_model_id != cache_key:
         if _parakeet_model is not None:
             _parakeet_model = None
             _parakeet_model_id = None
@@ -67,9 +72,10 @@ def get_transcription_model(model_id=None):
         with _safe_stdout_stderr():
             _parakeet_model = onnx_asr.load_model(
                 model_id,
+                path=local_model_path,
                 quantization="int8",
             )
-        _parakeet_model_id = model_id
+        _parakeet_model_id = cache_key
     return _parakeet_model
 
 
@@ -143,6 +149,99 @@ def _format_download_error(exc):
     return msg
 
 
+def _get_app_model_root():
+    """App-owned model cache used when the Hugging Face Python client is blocked."""
+    if os.name == "nt":
+        base = os.environ.get("LOCALAPPDATA") or os.environ.get("APPDATA") or str(Path.home() / "AppData" / "Local")
+    elif sys.platform == "darwin":
+        base = str(Path.home() / "Library" / "Application Support")
+    else:
+        base = os.environ.get("XDG_CACHE_HOME", str(Path.home() / ".cache"))
+    return Path(base) / "Meetings" / "models"
+
+
+def _get_app_model_dir(model_id):
+    return _get_app_model_root() / model_id.replace("/", "--")
+
+
+def _is_app_model_installed(model_id):
+    if model_id not in INT8_ONLY_REPOS:
+        return False
+    model_dir = _get_app_model_dir(model_id)
+    return model_dir.is_dir() and all((model_dir / filename).is_file() for filename in INT8_ONLY_FILES)
+
+
+def _get_dir_size(path):
+    total = 0
+    for item in path.rglob("*"):
+        try:
+            if item.is_file():
+                total += item.stat().st_size
+        except Exception:
+            pass
+    return total
+
+
+def _direct_model_file_url(model_id, filename):
+    return f"https://huggingface.co/{model_id}/resolve/main/{filename}"
+
+
+def _ps_quote(value):
+    return "'" + str(value).replace("'", "''") + "'"
+
+
+def _download_url_with_powershell(url, dest):
+    script = (
+        "$ProgressPreference='SilentlyContinue'; "
+        f"Invoke-WebRequest -Uri {_ps_quote(url)} -OutFile {_ps_quote(dest)} -UseBasicParsing"
+    )
+    subprocess.run(
+        ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", script],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+
+def _download_url_with_urllib(url, dest):
+    with urllib.request.urlopen(url, timeout=60) as response:
+        with open(dest, "wb") as f:
+            shutil.copyfileobj(response, f)
+
+
+def _download_url_to_file(url, dest):
+    tmp = Path(str(dest) + ".tmp")
+    tmp.unlink(missing_ok=True)
+    try:
+        if os.name == "nt":
+            try:
+                _download_url_with_powershell(url, tmp)
+            except Exception as e:
+                diag("powershell_download_failed", url=url, error=str(e))
+                _download_url_with_urllib(url, tmp)
+        else:
+            _download_url_with_urllib(url, tmp)
+        if not tmp.is_file() or tmp.stat().st_size == 0:
+            raise RuntimeError(f"Downloaded file is empty: {url}")
+        tmp.replace(dest)
+    finally:
+        tmp.unlink(missing_ok=True)
+
+
+def _download_int8_repo_files_to_app_dir(model_id):
+    model_dir = _get_app_model_dir(model_id)
+    model_dir.mkdir(parents=True, exist_ok=True)
+    for filename in INT8_ONLY_FILES:
+        dest = model_dir / filename
+        if dest.is_file() and dest.stat().st_size > 0:
+            continue
+        diag("direct_model_file_download_start", model_id=model_id, filename=filename)
+        _download_url_to_file(_direct_model_file_url(model_id, filename), dest)
+        diag("direct_model_file_download_ok", model_id=model_id, filename=filename, size=dest.stat().st_size)
+    if not _is_app_model_installed(model_id):
+        raise RuntimeError("Direct download finished, but the local model folder is incomplete.")
+
+
 def _download_int8_repo_files(model_id):
     from huggingface_hub import hf_hub_download
 
@@ -180,7 +279,22 @@ def download_transcription_model(model_id):
             diag("transcription_model_download_failed", model_id=model_id, attempt=attempt + 1, error=str(e))
             if attempt == 0 and _is_retryable_download_error(e):
                 continue
-            return False, _format_download_error(e)
+            break
+    if model_id in INT8_ONLY_REPOS:
+        try:
+            diag("transcription_model_direct_download_fallback", model_id=model_id, hub_error=str(last_error))
+            _download_int8_repo_files_to_app_dir(model_id)
+            clear_transcription_model_cache()
+            _invalidate_model_scan_cache()
+            diag("transcription_model_download_ok", model_id=model_id, source="direct")
+            return True, None
+        except Exception as e:
+            diag("transcription_model_direct_download_failed", model_id=model_id, error=str(e))
+            return False, (
+                "Rapid Scribe could not download the transcription model with either the Hugging Face client "
+                "or the Windows downloader. This computer may be blocking app-based downloads from Hugging Face. "
+                f"Last error: {_format_download_error(e)}"
+            )
     return False, _format_download_error(last_error)
 
 
@@ -212,8 +326,36 @@ def _invalidate_model_scan_cache():
         pass
 
 
+def _local_model_entries():
+    out = []
+    for repo_id in INT8_ONLY_REPOS:
+        if not _is_app_model_installed(repo_id):
+            continue
+        model_dir = _get_app_model_dir(repo_id)
+        size = _get_dir_size(model_dir)
+        out.append({
+            "repo_id": repo_id,
+            "size_on_disk": size,
+            "size_str": _format_size(size),
+            "revision_hashes": [],
+            "local_path": str(model_dir),
+        })
+    return out
+
+
+def _merge_model_entries(hub_models, local_models):
+    out = list(hub_models or [])
+    existing = {m.get("repo_id") for m in out}
+    for model in local_models:
+        if model["repo_id"] not in existing:
+            out.append(model)
+    out.sort(key=lambda x: x["repo_id"])
+    return out
+
+
 def list_installed_transcription_models():
     """List cached Hugging Face models that look like ASR/transcription. Returns (list, error)."""
+    local_models = _local_model_entries()
     # Fast path: return cached result if the HF hub directory hasn't changed since last scan.
     cache_path = _get_model_scan_cache_path()
     if cache_path.exists():
@@ -224,7 +366,7 @@ def list_installed_transcription_models():
             cached_mtime = cached.get("hf_dir_mtime")
             if hf_dir.is_dir() and cached_mtime is not None:
                 if abs(hf_dir.stat().st_mtime - cached_mtime) < 1.0:
-                    return cached["models"], None
+                    return _merge_model_entries(cached["models"], local_models), None
         except Exception:
             pass
 
@@ -232,11 +374,11 @@ def list_installed_transcription_models():
     try:
         from huggingface_hub import scan_cache_dir
     except ImportError:
-        return [], "huggingface_hub not installed"
+        return local_models, None if local_models else "huggingface_hub not installed"
     try:
         cache = scan_cache_dir()
     except Exception as e:
-        return [], str(e)
+        return local_models, None if local_models else str(e)
     out = []
     for repo in cache.repos:
         if repo.repo_type != "model":
@@ -250,7 +392,7 @@ def list_installed_transcription_models():
             "size_str": _format_size(repo.size_on_disk),
             "revision_hashes": [r.commit_hash for r in repo.revisions],
         })
-    out.sort(key=lambda x: x["repo_id"])
+    out = _merge_model_entries(out, local_models)
 
     # Write result to cache so the next startup can skip the scan.
     try:
@@ -275,6 +417,14 @@ def list_installed_transcription_models():
 
 def uninstall_transcription_model(repo_id, revision_hashes):
     """Remove a cached model from the Hugging Face cache. Returns (success, error_message)."""
+    local_model_dir = _get_app_model_dir(repo_id)
+    if local_model_dir.is_dir() and not revision_hashes:
+        try:
+            shutil.rmtree(local_model_dir)
+            _invalidate_model_scan_cache()
+            return True, None
+        except Exception as e:
+            return False, str(e)
     if not revision_hashes:
         return False, "No revisions to delete"
     try:
