@@ -33,10 +33,13 @@ INT8_ONLY_REPOS = frozenset({
 # Glob patterns for int8-only download: int8 ONNX files plus config/vocab/preprocessor.
 INT8_ONLY_ALLOW_PATTERNS = [
     "*int8*.onnx",
+    "*int8*.onnx?data",
     "config.json",
     "vocab.txt",
     "nemo128.onnx",
 ]
+
+_CLOSED_HTTP_CLIENT_ERROR = "client has been closed"
 
 
 def _format_size(num_bytes):
@@ -99,21 +102,62 @@ def _safe_stdout_stderr():
         sys.stderr = saved_stderr
 
 
+def _reset_huggingface_hub_http_client():
+    """Drop Hugging Face Hub's shared HTTP client so the next request gets a fresh one."""
+    try:
+        from huggingface_hub.utils import close_session
+        close_session()
+    except Exception:
+        pass
+
+
+def _is_closed_http_client_error(exc):
+    return _CLOSED_HTTP_CLIENT_ERROR in str(exc).lower()
+
+
+def _format_download_error(exc):
+    msg = str(exc).strip() or exc.__class__.__name__
+    if _is_closed_http_client_error(exc):
+        return (
+            "The download connection was closed unexpectedly. "
+            "Please try Download & install again. If it keeps happening, restart Rapid Scribe and check the network connection."
+        )
+    return msg
+
+
+def _download_transcription_model_once(model_id):
+    with _safe_stdout_stderr():
+        if model_id in INT8_ONLY_REPOS:
+            from huggingface_hub import snapshot_download
+            snapshot_download(model_id, allow_patterns=INT8_ONLY_ALLOW_PATTERNS)
+            return
+
+        import onnx_asr
+        onnx_asr.load_model(model_id, quantization="int8")
+
+
 def download_transcription_model(model_id):
     """
     Download (and briefly load) a transcription model from Hugging Face so it is cached for use.
     Does not keep the model in memory. Returns (success: bool, error_message: str | None).
     """
-    try:
-        with _safe_stdout_stderr():
-            import onnx_asr
-            onnx_asr.load_model(model_id, quantization="int8")
-        # Don't cache in our global; we only needed to trigger the download. Next get_transcription_model() will load from cache.
-        clear_transcription_model_cache()
-        _invalidate_model_scan_cache()
-        return True, None
-    except Exception as e:
-        return False, str(e)
+    last_error = None
+    for attempt in range(2):
+        try:
+            _reset_huggingface_hub_http_client()
+            _download_transcription_model_once(model_id)
+            # Don't cache in our global; we only needed to trigger the download. Next get_transcription_model() will load from cache.
+            clear_transcription_model_cache()
+            _invalidate_model_scan_cache()
+            diag("transcription_model_download_ok", model_id=model_id, attempt=attempt + 1)
+            return True, None
+        except Exception as e:
+            last_error = e
+            diag("transcription_model_download_failed", model_id=model_id, attempt=attempt + 1, error=str(e))
+            if attempt == 0 and _is_closed_http_client_error(e):
+                continue
+            return False, _format_download_error(e)
+    return False, _format_download_error(last_error)
 
 
 def run_startup_check_worker(result_queue):
