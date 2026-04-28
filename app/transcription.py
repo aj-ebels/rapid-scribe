@@ -30,16 +30,19 @@ INT8_ONLY_REPOS = frozenset({
     "istupakov/parakeet-tdt-0.6b-v2-onnx",
     "istupakov/parakeet-tdt-0.6b-v3-onnx",
 })
-# Glob patterns for int8-only download: int8 ONNX files plus config/vocab/preprocessor.
-INT8_ONLY_ALLOW_PATTERNS = [
-    "*int8*.onnx",
-    "*int8*.onnx?data",
+# Required files for int8-only Parakeet repos. Keep this explicit so install does not
+# depend on Hugging Face's repo snapshot listing when we only need a small subset.
+INT8_ONLY_FILES = [
     "config.json",
+    "encoder-model.int8.onnx",
+    "decoder_joint-model.int8.onnx",
     "vocab.txt",
     "nemo128.onnx",
 ]
 
 _CLOSED_HTTP_CLIENT_ERROR = "client has been closed"
+_HUB_CACHE_MISS_ERROR = "cannot find the appropriate snapshot folder"
+_HUB_LOCATE_FILES_ERROR = "trying to locate the files on the hub"
 
 
 def _format_size(num_bytes):
@@ -115,6 +118,15 @@ def _is_closed_http_client_error(exc):
     return _CLOSED_HTTP_CLIENT_ERROR in str(exc).lower()
 
 
+def _is_hub_lookup_error(exc):
+    msg = str(exc).lower()
+    return _HUB_CACHE_MISS_ERROR in msg or _HUB_LOCATE_FILES_ERROR in msg
+
+
+def _is_retryable_download_error(exc):
+    return _is_closed_http_client_error(exc) or _is_hub_lookup_error(exc)
+
+
 def _format_download_error(exc):
     msg = str(exc).strip() or exc.__class__.__name__
     if _is_closed_http_client_error(exc):
@@ -122,14 +134,26 @@ def _format_download_error(exc):
             "The download connection was closed unexpectedly. "
             "Please try Download & install again. If it keeps happening, restart Rapid Scribe and check the network connection."
         )
+    if _is_hub_lookup_error(exc):
+        return (
+            "Rapid Scribe could not reach Hugging Face to download the transcription model, "
+            "and the model is not already cached on this computer. Please check the internet connection, VPN/proxy, "
+            "or firewall, then try Download & install again."
+        )
     return msg
+
+
+def _download_int8_repo_files(model_id):
+    from huggingface_hub import hf_hub_download
+
+    for filename in INT8_ONLY_FILES:
+        hf_hub_download(model_id, filename)
 
 
 def _download_transcription_model_once(model_id):
     with _safe_stdout_stderr():
         if model_id in INT8_ONLY_REPOS:
-            from huggingface_hub import snapshot_download
-            snapshot_download(model_id, allow_patterns=INT8_ONLY_ALLOW_PATTERNS)
+            _download_int8_repo_files(model_id)
             return
 
         import onnx_asr
@@ -154,7 +178,7 @@ def download_transcription_model(model_id):
         except Exception as e:
             last_error = e
             diag("transcription_model_download_failed", model_id=model_id, attempt=attempt + 1, error=str(e))
-            if attempt == 0 and _is_closed_http_client_error(e):
+            if attempt == 0 and _is_retryable_download_error(e):
                 continue
             return False, _format_download_error(e)
     return False, _format_download_error(last_error)
