@@ -1,10 +1,10 @@
-# Rapid Scribe
+# Rapid Scribe 🎙️
 
 Real-time meeting capture and transcription for Windows (and WSL2). Record system audio and your mic, see live speech-to-text, and — if you bring your own OpenAI key — generates AI summaries and Q&A.
 
 **License:** [MIT](LICENSE) — use, modify, and distribute under the terms in that file.
 
-## Quick start (Windows installer)
+## 🚀 Quick start (Windows installer)
 
 1. Download the latest **`Rapid Scribe vX.X-Setup.exe`** from **[Releases](https://github.com/aj-ebels/rapid-scribe/releases)** and run it.
 2. If Windows shows **“Windows protected your PC”**, choose **More info** → **Run anyway** (unsigned installer; only proceed if you trust this project).
@@ -41,7 +41,7 @@ python main.py
 
 On first run: download the model under **Models**, then drop an OpenAI key under **Settings** if you want the AI summarization and Q&A to function.
 
-## Features
+## ✨ Features
 
 - **Live transcription** — Parakeet (ONNX) speech-to-text, scrolling in real time
 - **Meeting mode** — Mic + system audio (calls, browser) in a single stream
@@ -66,7 +66,7 @@ pyinstaller meetings.spec
 | [PACKAGING.md](PACKAGING.md) | Build, installer, updates, troubleshooting |
 | [dev.md](dev.md) | Development notes, performance |
 
-## Requirements
+## 📋 Requirements
 
 - **Python** 3.10 or 3.11 (64-bit) — source install only
 - **Windows** for meeting/loopback capture; WSL2 works fine for plain mic input
