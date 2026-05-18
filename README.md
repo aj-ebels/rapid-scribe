@@ -46,6 +46,7 @@ On first run: download the model under **Models**, then drop an OpenAI key under
 - **Live transcription** — Parakeet (ONNX) speech-to-text, scrolling in real time
 - **Meeting mode** — Mic + system audio (calls, browser) in a single stream
 - **AI summary** — Optional OpenAI summaries and export filenames
+- **Custom prompts** — Define your own AI prompts under **AI Prompts** to tailor summaries
 - **Ask AI** — Chat over your transcript and notes
 - **In-app updates** — You'll be told when a new version exists
 
