@@ -26,7 +26,7 @@ Real-time meeting capture and transcription for Windows (and WSL2). Record syste
 
 The app checks for updates when a new release ships.
 
-## Run from source (for development)
+## 🛠️ Run from source (for development)
 
 **Windows**
 
@@ -49,7 +49,7 @@ On first run: download the model under **Models**, then drop an OpenAI key under
 - **Ask AI** — Chat over your transcript and notes
 - **In-app updates** — You'll be told when a new version exists
 
-## Build the installer
+## 📦 Build the installer
 
 See **[PACKAGING.md](PACKAGING.md)** for the full ritual. TL;DR:
 
@@ -59,7 +59,7 @@ pyinstaller meetings.spec
 # Compile installer.iss in Inno Setup → installer_output\Rapid Scribe vX.X-Setup.exe
 ```
 
-## Docs
+## 📚 Docs
 
 | Doc | Description |
 |-----|-------------|
