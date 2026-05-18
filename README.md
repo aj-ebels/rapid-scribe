@@ -26,7 +26,7 @@ Real-time meeting capture and transcription for Windows (and WSL2). Record syste
 
 The app checks for updates when a new release is published.
 
-## Run from source
+## Run from source (for development)
 
 **Windows**
 
