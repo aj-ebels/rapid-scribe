@@ -7,3 +7,5 @@ meetings.json
 .env
 __pycache__/
 .claude/
+dist-electron/
+node-modules/
