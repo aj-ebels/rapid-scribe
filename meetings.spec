@@ -1,23 +1,19 @@
 # -*- mode: python ; coding: utf-8 -*-
-# PyInstaller spec for Rapid Scribe (Windows).
+# PyInstaller spec for Rapid Scribe sidecar (headless, Electron host).
 # Build: pyinstaller meetings.spec
-# Output: dist/Rapid Scribe/Rapid Scribe.exe (+ folder with dependencies and data)
+# Output: dist/Rapid Scribe Sidecar/rapid-scribe-sidecar.exe
 
 import os
 
-# Data files to bundle (relative to spec directory)
 SPEC_DIR = os.path.dirname(os.path.abspath(SPEC))
 datas = [
-    (os.path.join(SPEC_DIR, "themes"), "themes"),
     (os.path.join(SPEC_DIR, "assets", "icons"), "assets/icons"),
     (os.path.join(SPEC_DIR, "icon.ico"), "."),
 ]
-# Bundle prompts.json if it exists (default prompts for first run)
 prompts_src = os.path.join(SPEC_DIR, "prompts.json")
 if os.path.isfile(prompts_src):
     datas.append((prompts_src, "."))
 
-# Bundle onnx_asr preprocessors (nemo128.onnx etc.) so model load finds them when frozen
 try:
     import onnx_asr
     _onnx_asr_root = os.path.dirname(os.path.abspath(onnx_asr.__file__))
@@ -27,9 +23,7 @@ try:
 except Exception:
     pass
 
-# Hidden imports for dynamic / optional modules
 hiddenimports = [
-    "customtkinter",
     "sounddevice",
     "numpy",
     "scipy",
@@ -39,12 +33,11 @@ hiddenimports = [
     "onnxruntime",
     "onnx_asr",
 ]
-# Windows-only
 if __import__("sys").platform == "win32":
     hiddenimports.append("pyaudiowpatch")
 
 a = Analysis(
-    [os.path.join(SPEC_DIR, "main.py")],
+    [os.path.join(SPEC_DIR, "sidecar", "sidecar.py")],
     pathex=[SPEC_DIR],
     binaries=[],
     datas=datas,
@@ -52,7 +45,7 @@ a = Analysis(
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
-    excludes=[],
+    excludes=["customtkinter", "tkinter", "PIL"],
     noarchive=False,
     optimize=0,
 )
@@ -64,11 +57,11 @@ exe = EXE(
     a.scripts,
     [],
     exclude_binaries=True,
-    name="Rapid Scribe",
+    name="rapid-scribe-sidecar",
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
-    console=False,  # No console window for GUI app
+    console=True,
     disable_windowed_traceback=False,
     argv_emulation=False,
     target_arch=None,
@@ -84,5 +77,5 @@ coll = COLLECT(
     strip=False,
     upx=False,
     upx_exclude=[],
-    name="Rapid Scribe",
+    name="Rapid Scribe Sidecar",
 )

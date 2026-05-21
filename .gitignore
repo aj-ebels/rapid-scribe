@@ -1,6 +1,9 @@
 .venv
 build/
 dist/
+dist-electron/
+dist-renderer/
+node_modules/
 installer_output/
 prompts.json
 meetings.json

@@ -3,7 +3,7 @@ In-app update check: compare current version with latest release (GitHub or JSON
 Prompt users to download when a newer version exists. Configure via env vars or constants:
 - UPDATE_CHECK_GITHUB_REPO: "owner/repo" for GitHub Releases (e.g. "YourOrg/rapid-scribe").
 - UPDATE_CHECK_JSON_URL: URL returning {"version": "3.1", "url": "https://..."} (overrides GitHub).
-When changing __version__, also update installer.iss: AppVersion and OutputBaseFilename.
+When changing __version__, also update package.json version.
 """
 import json
 import os

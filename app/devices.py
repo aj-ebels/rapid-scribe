@@ -73,12 +73,12 @@ def get_default_monitor_device():
         return None, str(e)
 
 
-def get_effective_audio_device(app):
+def get_effective_audio_device(settings=None):
     """
     Resolve capture mode and device indices from settings.
     Returns (mode, mic_device_index, loopback_device_index).
     """
-    settings = load_settings() if app is None else getattr(app, "settings", load_settings())
+    settings = settings if settings is not None else load_settings()
     mode = settings.get("audio_mode") or AUDIO_MODE_DEFAULT
     if mode == AUDIO_MODE_LOOPBACK:
         return (AUDIO_MODE_LOOPBACK, None, settings.get("loopback_device_index"))

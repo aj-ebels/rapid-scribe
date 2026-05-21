@@ -60,7 +60,7 @@ CHUNK_DURATION_SEC: float = 7.0
 #   Shorter = more responsive cuts; longer = waits longer for a "real" pause.
 #   Example: 0.45 means a 450 ms gap in speech triggers a cut.
 #
-VAD_MIN_CHUNK_SEC: float = 5.0
+VAD_MIN_CHUNK_SEC: float = 1.5
 VAD_MAX_CHUNK_SEC: float = 25.0
 VAD_SILENCE_SEC:   float = 0.5
 

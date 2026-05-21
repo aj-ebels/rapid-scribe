@@ -1,0 +1,252 @@
+:root {
+  --bg: #1e1e2e;
+  --card: #2a2a3e;
+  --border: #3d3d5c;
+  --text: #e8e8f0;
+  --muted: #9a9ab0;
+  --primary: #7aa2f7;
+  --primary-hover: #5d84e8;
+  --danger: #f7768e;
+  --success: #9ece6a;
+  --radius: 8px;
+  --pad: 12px;
+  font-family: "Segoe UI", system-ui, sans-serif;
+  font-size: 14px;
+  color: var(--text);
+  background: var(--bg);
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  min-height: 100vh;
+}
+
+button,
+input,
+select,
+textarea {
+  font: inherit;
+}
+
+button {
+  cursor: pointer;
+  border: none;
+  border-radius: var(--radius);
+  padding: 8px 14px;
+  background: var(--primary);
+  color: #111;
+  font-weight: 600;
+}
+
+button:hover:not(:disabled) {
+  background: var(--primary-hover);
+}
+
+button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+button.secondary {
+  background: var(--border);
+  color: var(--text);
+}
+
+button.danger {
+  background: var(--danger);
+  color: #111;
+}
+
+input,
+select,
+textarea {
+  background: var(--card);
+  border: 1px solid var(--border);
+  color: var(--text);
+  border-radius: var(--radius);
+  padding: 8px;
+}
+
+textarea {
+  resize: vertical;
+  width: 100%;
+  min-height: 120px;
+}
+
+.app-shell {
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+}
+
+.top-bar {
+  display: flex;
+  align-items: center;
+  gap: var(--pad);
+  padding: var(--pad) 16px;
+  border-bottom: 1px solid var(--border);
+  background: var(--card);
+}
+
+.top-bar h1 {
+  margin: 0;
+  font-size: 18px;
+  flex: 1;
+}
+
+.level-meter {
+  width: 120px;
+  height: 8px;
+  background: var(--border);
+  border-radius: 4px;
+  overflow: hidden;
+}
+
+.level-meter span {
+  display: block;
+  height: 100%;
+  background: var(--success);
+  transition: width 0.05s linear;
+}
+
+.main-layout {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+}
+
+.sidebar {
+  width: 220px;
+  border-right: 1px solid var(--border);
+  padding: var(--pad);
+  overflow-y: auto;
+  background: #181825;
+}
+
+.sidebar button.meeting-item {
+  display: block;
+  width: 100%;
+  text-align: left;
+  margin-bottom: 6px;
+  background: transparent;
+  color: var(--text);
+  font-weight: normal;
+}
+
+.sidebar button.meeting-item.active {
+  background: var(--border);
+}
+
+.content {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.tabs {
+  display: flex;
+  gap: 4px;
+  padding: 8px 12px 0;
+  border-bottom: 1px solid var(--border);
+  background: var(--card);
+  flex-wrap: wrap;
+}
+
+.tabs button {
+  background: transparent;
+  color: var(--muted);
+  border-radius: var(--radius) var(--radius) 0 0;
+  font-weight: 500;
+}
+
+.tabs button.active {
+  background: var(--bg);
+  color: var(--text);
+}
+
+.tab-panel {
+  flex: 1;
+  overflow: auto;
+  padding: 16px;
+}
+
+.card {
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 16px;
+  margin-bottom: 16px;
+}
+
+.card h2 {
+  margin: 0 0 8px;
+  font-size: 16px;
+}
+
+.muted {
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.row {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  flex-wrap: wrap;
+  margin-bottom: 8px;
+}
+
+.transcript-box {
+  min-height: 280px;
+  white-space: pre-wrap;
+  line-height: 1.5;
+}
+
+.chat-messages {
+  max-height: 320px;
+  overflow-y: auto;
+  margin-bottom: 12px;
+}
+
+.chat-msg {
+  margin-bottom: 10px;
+  padding: 8px;
+  border-radius: var(--radius);
+  background: #181825;
+}
+
+.chat-msg.user {
+  border-left: 3px solid var(--primary);
+}
+
+.chat-msg.assistant {
+  border-left: 3px solid var(--success);
+}
+
+.splash {
+  position: fixed;
+  inset: 0;
+  background: var(--bg);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  z-index: 100;
+}
+
+.splash h1 {
+  margin-bottom: 8px;
+}
+
+.error-banner {
+  background: #3d2028;
+  border: 1px solid var(--danger);
+  color: var(--danger);
+  padding: 10px 16px;
+  margin: 0;
+}

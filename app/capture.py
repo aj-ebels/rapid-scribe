@@ -479,14 +479,10 @@ def capture_worker_loopback(loopback_device_index, chunk_queue, stop_event, leve
                 pass
 
 
-def meeting_chunk_ready(app, wav_path: str, rms: float = None):
+def meeting_chunk_ready(chunk_queue, wav_path: str, rms: float = None):
     """Callback from ChunkRecorder (in-process Meeting mode): queue WAV path and RMS for transcription."""
+    diag("chunk_queued", path=wav_path, worker="meeting")
     try:
-        from diagnostic import write as diag
-        diag("chunk_queued", path=wav_path, worker="meeting")
-    except ImportError:
-        pass
-    try:
-        app.chunk_queue.put_nowait((wav_path, rms) if rms is not None else wav_path)
+        chunk_queue.put_nowait((wav_path, rms) if rms is not None else wav_path)
     except queue.Full:
         pass

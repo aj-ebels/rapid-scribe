@@ -1,24 +1,48 @@
-# Development Notes
+# Development notes
 
-## Performance (incl. running alongside Teams)
+## Architecture
 
-- **Transcription in subprocess**: Transcription runs in a separate process so ONNX inference does not hold the main process GIL; this avoids UI/audio freezes and reduces contention with other apps (e.g. Teams). See `app/transcription.py` (`start_transcription_subprocess`) and `app/gui.py` (multiprocessing queues/process).
-- **Batched transcript updates**: The GUI drains all ready transcript lines each poll tick and does a single text insert/scroll to limit widget updates when several chunks complete at once.
+- **Electron main** (`electron/main.ts`) — spawns the sidecar, forwards IPC events to the renderer.
+- **Renderer** (`renderer/`) — React + Vite UI.
+- **Python sidecar** (`sidecar/sidecar.py`, `app/ipc.py`, `app/session.py`) — recording, transcription, OpenAI, storage.
 
-## Run the app
-```bash
-python -m venv .venv
-.venv\Scripts\activate
-pip install -r requirements.txt
-python main.py
-```
+## Transcription subprocess
 
-## Package for Windows (share with others)
-See **[PACKAGING.md](PACKAGING.md)** for full steps. Quick build:
+Transcription runs in a separate process so ONNX inference does not hold the sidecar GIL. See `app/transcription.py` (`start_transcription_subprocess`) and `app/session.py` (queues/process).
+
+## Local run
 
 ```powershell
-pip install -r requirements.txt -r requirements-build.txt
-pyinstaller meetings.spec
+.venv\Scripts\activate
+pip install -r requirements.txt
+npm install
+npm run dev
 ```
 
-Then share the `dist\Rapid Scribe` folder (or build the installer: open `installer.iss` in Inno Setup and Compile; see PACKAGING.md).
+## Sidecar-only smoke test
+
+```powershell
+python -m sidecar.sidecar
+```
+
+Example commands (one JSON object per line on stdin):
+
+```json
+{"id":"1","type":"ping","params":{}}
+{"id":"2","type":"model_status","params":{}}
+{"id":"3","type":"list_devices","params":{}}
+```
+
+## Build for testers
+
+```powershell
+pyinstaller meetings.spec
+npm run dist
+```
+
+Share `installer_output\Rapid Scribe Setup *.exe`.
+
+## Performance
+
+- Sidecar is spawned on Electron `ready` before the window loads (splash until `ping` succeeds).
+- Transcription subprocess stays alive between recordings to avoid cold model load.
