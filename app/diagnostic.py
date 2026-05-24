@@ -21,6 +21,11 @@ def _get_log_path():
     return Path(base) / "Meetings" / "diagnostic.log"
 
 
+def log_file_path() -> Path:
+    """Path to diagnostic.log (whether file logging is active)."""
+    return _get_log_path()
+
+
 def _enabled():
     if getattr(sys, "frozen", False):
         return True

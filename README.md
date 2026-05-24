@@ -49,8 +49,8 @@ On first run: download the model under **Models**, then drop an OpenAI key under
 - **Custom prompts** — Define your own AI prompts under **AI Prompts** to tailor summaries
 - **Ask AI** — Chat over your transcript and notes
 - **In-app updates** — You'll be told when a new version exists
+- **Problem reporting** — Uncaught errors offer an email focused on **that** exception (traceback + short log tail). **Settings → Report a problem…** sends a broader manual report. Set `RAPID_SCRIBE_REPORT_EMAIL` or `_DEFAULT_RECIPIENT_EMAIL` in `app/error_report.py`.
 
-## 📦 Build the installer
 
 See **[PACKAGING.md](PACKAGING.md)** for the full ritual. TL;DR:
 

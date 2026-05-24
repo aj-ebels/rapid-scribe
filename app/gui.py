@@ -14,7 +14,7 @@ from pathlib import Path
 import numpy as np
 import customtkinter as ctk
 import sounddevice as sd
-from tkinter import messagebox, filedialog, Canvas, Scrollbar, Toplevel, Label as TkLabel
+from tkinter import messagebox, filedialog, Canvas, Scrollbar, Toplevel, Label as TkLabel, simpledialog
 
 try:
     from PIL import Image as PILImage
@@ -52,6 +52,7 @@ from .ai_summary import generate_ai_summary, generate_export_name, ask_meeting_a
 from .api_key_storage import get_openai_api_key, set_openai_api_key, clear_openai_api_key
 from .diagnostic import write as diag
 from .update_check import check_for_updates
+from .error_report import install_error_reporting, open_problem_report
 from .meetings_storage import (
     load_meetings,
     save_meetings,
@@ -841,6 +842,7 @@ def main(splash_window=None):
 
     app = type("App", (), {})()
     app.root = root
+    install_error_reporting(root)
     app.running = False
     app._stopping = False
     # Use multiprocessing primitives so transcription can run in a subprocess (avoids GIL contention with GUI/Teams).
@@ -2232,6 +2234,41 @@ def main(splash_window=None):
         threading.Thread(target=worker, daemon=True).start()
 
     ctk.CTkButton(update_row, text="Check for updates", font=ctk.CTkFont(family=UI_FONT_FAMILY, size=F.small), width=140, height=32, corner_radius=UI_RADIUS, fg_color=COLORS["primary_fg"], hover_color=COLORS["primary_hover"], command=lambda: _do_check_for_updates(from_startup=False)).pack(side="left")
+
+    ctk.CTkLabel(settings_card, text="Problem reporting", font=ctk.CTkFont(family=UI_FONT_FAMILY, size=F.header, weight="bold")).pack(anchor="w", pady=(UI_PAD_LG, 4))
+    ctk.CTkLabel(
+        settings_card,
+        text="After a crash, email focuses on that error (traceback + short log). “Report a problem…” sends a broader log-based report. Uses mailto: (long drafts may be clipped; full text copied to clipboard when clipped). Set RAPID_SCRIBE_REPORT_EMAIL or edit app/error_report.py.",
+        font=ctk.CTkFont(family=UI_FONT_FAMILY, size=F.small),
+        text_color="gray",
+        wraplength=520,
+        anchor="w",
+    ).pack(anchor="w", pady=(0, 6))
+
+    def _report_problem_manual():
+        note = simpledialog.askstring(
+            "Report a problem",
+            "Optional: describe what happened (you can leave this blank):",
+            parent=root,
+        )
+        try:
+            open_problem_report(root, user_note=(note or "").strip())
+        except Exception as e:
+            messagebox.showerror("Report failed", str(e), parent=root)
+
+    report_row = ctk.CTkFrame(settings_card, fg_color="transparent")
+    report_row.pack(fill="x", pady=(0, UI_PAD_LG))
+    ctk.CTkButton(
+        report_row,
+        text="Report a problem…",
+        font=ctk.CTkFont(family=UI_FONT_FAMILY, size=F.small),
+        width=160,
+        height=32,
+        corner_radius=UI_RADIUS,
+        fg_color=COLORS["secondary_fg"],
+        hover_color=COLORS["secondary_hover"],
+        command=_report_problem_manual,
+    ).pack(side="left")
 
     # Run update check once in background shortly after startup; only prompt if a newer version exists
     def _run_startup_update_check():
