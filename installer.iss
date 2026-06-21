@@ -41,7 +41,7 @@ begin
     SuppressibleMsgBox(
       'Rapid Scribe is not supported on ARM-based Windows PCs (Snapdragon X, Copilot+ PCs, etc.).' + #13#10 + #13#10 +
       'The app is built for Intel and AMD x64 processors only. Please install on a standard x64 Windows 10 or 11 PC.',
-      mbError, MB_OK);
+      mbError, MB_OK, MB_OK);
     Result := False;
     Exit;
   end;
