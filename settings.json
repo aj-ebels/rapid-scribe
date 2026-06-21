@@ -42,5 +42,11 @@
     true,
     true,
     false
-  ]
+  ],
+  "openai_model_summary": "gpt-5.5",
+  "openai_model_ask": "gpt-5.5",
+  "openai_model_export": "gpt-5.5",
+  "openai_model_summary_explicit": false,
+  "openai_model_ask_explicit": false,
+  "openai_model_export_explicit": false
 }

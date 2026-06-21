@@ -10,10 +10,12 @@ Real-time meeting capture and transcription for Windows (and WSL2). Record syste
 2. If Windows shows **“Windows protected your PC”**, choose **More info** → **Run anyway** (unsigned installer; only proceed if you trust this project).
 3. After install, pin or add a shortcut as you like. Uninstall anytime via **Settings → Apps**.
 
+**Requires 64-bit Windows 10 or 11 on Intel or AMD (x64).** Snapdragon / ARM Copilot+ PCs are not supported. If the installer reports an unsupported Windows version, see [PACKAGING.md — Troubleshooting](PACKAGING.md#troubleshooting).
+
 ### One-time setup
 
 1. **Models** tab — download the transcription model (once, ~650 MB).
-2. **Settings** tab — paste your **OpenAI API key** and **Save** (optional but needed for AI Summary and Ask AI). Calls use your key and incur OpenAI usage; the app rate-limits requests to reduce accidental spam.
+2. **Settings** tab — paste your **OpenAI API key** and **Save** (optional but needed for AI Summary and Ask AI). Optionally pick OpenAI models for Summary, Ask AI, and export naming. Calls use your key and incur OpenAI usage; the app rate-limits requests to reduce accidental spam.
 3. For summaries, **Call Summary** is the default AI prompt (Notion-style output). Add your own prompts under **AI Prompts** if you like.
 
 ### Using the app
@@ -70,5 +72,6 @@ pyinstaller meetings.spec
 ## 📋 Requirements
 
 - **Python** 3.10 or 3.11 (64-bit) — source install only
+- **64-bit Windows 10 or 11 on Intel/AMD (x64)** — Snapdragon / ARM Windows is not supported
 - **Windows** for meeting/loopback capture; WSL2 works fine for plain mic input
 - **OpenAI API key** (optional) for AI summary and Q&A
