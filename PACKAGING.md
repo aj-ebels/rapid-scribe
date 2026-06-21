@@ -136,6 +136,7 @@ You can also run with a console to see tracebacks: in `meetings.spec` set `conso
 | **Theme or icon missing** | Confirm `themes/` and `icon.ico` are next to `meetings.spec` and that the spec’s `datas` includes them (they are in the default spec). |
 | **Transcription model not found** | Models are stored in the user’s Hugging Face cache (e.g. `%USERPROFILE%\.cache\huggingface\hub`). Users must open the **Models** tab and click **Download & install** once. |
 | **Antivirus blocks the exe** | PyInstaller executables are sometimes flagged. You can: (1) Sign the exe (code signing cert), or (2) Distribute via an installer and/or zip and ask users to add an exclusion. |
+| **“This program does not support the version of Windows…”** when running the installer | Inno Setup shows this generic message for **unsupported CPU architecture**, not just old Windows. **Snapdragon / ARM Copilot+ PCs** hit this with older installers (`ArchitecturesAllowed=x64`). Rebuild with the current `installer.iss`, which detects ARM and shows an explicit message. Rapid Scribe requires **Intel or AMD x64** — ARM is not supported (native deps like ONNX Runtime and WASAPI audio do not run reliably under emulation). Other causes: **32-bit Windows**, or **compatibility mode** on the setup exe (Properties → Compatibility → uncheck). |
 | **Large folder size** | Expected (Python + numpy/scipy/ONNX). To shrink: exclude unneeded packages in the spec `excludes`, or use UPX (set `upx=True` in the spec if you have UPX installed). |
 
 ## Single-file build (optional)

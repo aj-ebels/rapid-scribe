@@ -6,6 +6,13 @@ import re
 import threading
 import time
 
+from .openai_models import (
+    FALLBACK_MODEL,
+    completion_kwargs,
+    is_unsupported_reasoning_error,
+    supports_reasoning_effort,
+)
+
 # Regex patterns to replace {{transcript}} and {{manual_notes}} (optional spaces inside braces)
 _PLACEHOLDER_TRANSCRIPT = re.compile(r"\{\{\s*transcript\s*\}\}")
 _PLACEHOLDER_MANUAL_NOTES = re.compile(r"\{\{\s*manual_notes\s*\}\}")
@@ -14,7 +21,28 @@ _recent_calls = []
 _rate_limit_lock = threading.Lock()
 
 
-def generate_ai_summary(api_key, prompt_template, transcript, manual_notes=""):
+def _is_not_chat_model_error(exc):
+    msg = (getattr(exc, "message", None) or str(exc)).lower()
+    return "not a chat model" in msg or "v1/completions" in msg
+
+
+def _create_completion(client, model, messages):
+    kwargs = completion_kwargs(model, messages)
+    try:
+        return client.chat.completions.create(**kwargs)
+    except Exception as e:
+        if _is_not_chat_model_error(e):
+            hint = (
+                f"Model '{model}' is Responses API–only (e.g. *-pro models). "
+                "This app uses Chat Completions — try gpt-5.5, gpt-5.4-mini, or gpt-5.2 in Settings → AI models."
+            )
+            raise ValueError(hint) from e
+        if supports_reasoning_effort(model) and is_unsupported_reasoning_error(e):
+            return client.chat.completions.create(model=model, messages=messages)
+        raise
+
+
+def generate_ai_summary(api_key, prompt_template, transcript, manual_notes="", model=None):
     """
     Call OpenAI API to generate summary.
     Returns (success, result_text_or_error).
@@ -30,6 +58,7 @@ def generate_ai_summary(api_key, prompt_template, transcript, manual_notes=""):
     if not ok:
         return False, err
 
+    model = (model or "").strip() or FALLBACK_MODEL
     # Replace {{transcript}} and {{manual_notes}} (regex allows optional spaces inside braces)
     # Use repl=lambda to avoid interpreting transcript/notes as regex backreferences
     text = _PLACEHOLDER_TRANSCRIPT.sub(lambda m: transcript, prompt_template)
@@ -40,10 +69,10 @@ def generate_ai_summary(api_key, prompt_template, transcript, manual_notes=""):
         return False, "The 'openai' package is not installed. Run: pip install openai"
     try:
         client = OpenAI(api_key=api_key)
-        response = client.chat.completions.create(
-            model="gpt-5.2",
-            messages=[{"role": "user", "content": text}],
-            reasoning_effort="low",
+        response = _create_completion(
+            client,
+            model,
+            [{"role": "user", "content": text}],
         )
         content = response.choices[0].message.content
         return True, (content or "").strip()
@@ -72,7 +101,15 @@ def _is_context_length_error(exc):
     return "context" in msg and ("length" in msg or "limit" in msg or "maximum" in msg)
 
 
-def ask_meeting_ai(api_key, manual_notes, transcript, ai_summary, chat_messages, new_user_message):
+def ask_meeting_ai(
+    api_key,
+    manual_notes,
+    transcript,
+    ai_summary,
+    chat_messages,
+    new_user_message,
+    model=None,
+):
     """
     Call OpenAI API to answer a question about the meeting.
     chat_messages: list of {"role": "user"|"assistant", "content": "..."} in order.
@@ -87,6 +124,8 @@ def ask_meeting_ai(api_key, manual_notes, transcript, ai_summary, chat_messages,
     ok, err = _check_rate_limit()
     if not ok:
         return False, err
+
+    model = (model or "").strip() or FALLBACK_MODEL
 
     parts = []
     if (manual_notes or "").strip():
@@ -117,11 +156,7 @@ def ask_meeting_ai(api_key, manual_notes, transcript, ai_summary, chat_messages,
         return False, "The 'openai' package is not installed. Run: pip install openai"
     try:
         client = OpenAI(api_key=api_key)
-        response = client.chat.completions.create(
-            model="gpt-5.2",
-            messages=messages,
-            reasoning_effort="low",
-        )
+        response = _create_completion(client, model, messages)
         content = response.choices[0].message.content
         return True, (content or "").strip()
     except Exception as e:
@@ -130,7 +165,7 @@ def ask_meeting_ai(api_key, manual_notes, transcript, ai_summary, chat_messages,
         return False, str(e)
 
 
-def generate_export_name(api_key, summary_excerpt):
+def generate_export_name(api_key, summary_excerpt, model=None):
     """
     Call OpenAI API to generate a very concise export file name from a summary excerpt.
     summary_excerpt: typically the first 250 characters of the summary.
@@ -141,6 +176,8 @@ def generate_export_name(api_key, summary_excerpt):
     if not excerpt:
         return False, "Summary excerpt is empty."
 
+    model = (model or "").strip() or FALLBACK_MODEL
+
     prompt = (
         "Generate a very concise (a few words maximum) file name (no extension) for this meeting summary. Examples: \"ABC Industries call\", \"conference debrief meeting\", \"product launch meeting\". Reply with only the suggested name, nothing else.\n\nSummary excerpt:\n" + excerpt[:250]
     )
@@ -150,10 +187,10 @@ def generate_export_name(api_key, summary_excerpt):
         return False, "The 'openai' package is not installed. Run: pip install openai"
     try:
         client = OpenAI(api_key=api_key)
-        response = client.chat.completions.create(
-            model="gpt-5.2",
-            reasoning_effort="low",
-            messages=[{"role": "user", "content": prompt}],
+        response = _create_completion(
+            client,
+            model,
+            [{"role": "user", "content": prompt}],
         )
         content = (response.choices[0].message.content or "").strip()
         if not content:

@@ -50,6 +50,18 @@ from .capture import (
 )
 from .ai_summary import generate_ai_summary, generate_export_name, ask_meeting_ai
 from .api_key_storage import get_openai_api_key, set_openai_api_key, clear_openai_api_key
+from .openai_models import (
+    CUSTOM_OPTION,
+    FALLBACK_MODEL,
+    apply_auto_upgrade,
+    load_cache,
+    menu_values_for_model,
+    recommended_default,
+    recommended_models,
+    refresh_models,
+    resolve_model,
+    is_chat_model,
+)
 from .diagnostic import write as diag
 from .update_check import check_for_updates
 from .error_report import install_error_reporting, open_problem_report
@@ -1253,7 +1265,8 @@ def main(splash_window=None):
         app.generate_name_btn.configure(state="disabled")
         result_holder = []
         def worker():
-            name_ok, name_result = generate_export_name(api_key, summary[:250])
+            model = resolve_model(app.settings, "export")
+            name_ok, name_result = generate_export_name(api_key, summary[:250], model=model)
             result_holder.append((name_ok, name_result))
         def check_done():
             if not result_holder:
@@ -1427,7 +1440,10 @@ def main(splash_window=None):
         _start_summary_pulse(app)
         result_holder = []
         def worker():
-            ok, out = generate_ai_summary(api_key, prompt_obj["prompt"], transcript, manual_notes=manual_notes)
+            model = resolve_model(app.settings, "summary")
+            ok, out = generate_ai_summary(
+                api_key, prompt_obj["prompt"], transcript, manual_notes=manual_notes, model=model
+            )
             result_holder.append((ok, out))
         def check_done():
             if not result_holder:
@@ -1671,6 +1687,7 @@ def main(splash_window=None):
         transcript_text = app.log.get("1.0", "end").strip()
         summary_text_content = app.summary_text.get("1.0", "end").strip()
         def worker():
+            model = resolve_model(app.settings, "ask")
             ok, out = ask_meeting_ai(
                 api_key,
                 manual_notes_text,
@@ -1678,6 +1695,7 @@ def main(splash_window=None):
                 summary_text_content,
                 history_for_api,
                 user_text,
+                model=model,
             )
             result_holder.append((ok, out))
         def check_done():
@@ -2171,6 +2189,8 @@ def main(splash_window=None):
             app.openai_key_entry.delete(0, "end")
             app.openai_key_entry.configure(placeholder_text="Saved. Key is stored on this device only.")
             app.openai_key_status_label.configure(text="A key is already saved. Enter a new key and click Save key to replace it.")
+            _set_openai_models_enabled(True)
+            _refresh_openai_models(force=True)
         else:
             messagebox.showerror("Save failed", "Could not save API key. Check write access to app data folder.", parent=root)
     def _clear_openai_key():
@@ -2180,13 +2200,219 @@ def main(splash_window=None):
             app.openai_key_entry.delete(0, "end")
             app.openai_key_entry.configure(placeholder_text="Enter key to save, or leave blank to keep existing")
             app.openai_key_status_label.configure(text="No key saved yet. Get an API key from platform.openai.com and paste it above.")
+            if getattr(app, "_set_openai_models_enabled", None):
+                app._set_openai_models_enabled(False)
         else:
             messagebox.showerror("Clear failed", "Could not remove the API key file.", parent=root)
     ctk.CTkButton(api_key_row, text="Save key", font=ctk.CTkFont(family=UI_FONT_FAMILY, size=F.small), width=84, height=32, corner_radius=UI_RADIUS, fg_color=COLORS["primary_fg"], hover_color=COLORS["primary_hover"], command=_save_openai_key).pack(side="left")
     ctk.CTkButton(api_key_row, text="Clear key", font=ctk.CTkFont(family=UI_FONT_FAMILY, size=F.small), width=84, height=32, corner_radius=UI_RADIUS, fg_color=COLORS["secondary_fg"], hover_color=COLORS["secondary_hover"], command=_clear_openai_key).pack(side="left", padx=(UI_PAD, 0))
     status_text = "A key is already saved. Enter a new key and click Save key to replace it." if get_openai_api_key() else "No key saved yet. Get an API key from platform.openai.com and paste it above."
     app.openai_key_status_label = ctk.CTkLabel(settings_card, text=status_text, font=ctk.CTkFont(family=UI_FONT_FAMILY, size=F.tiny), text_color="gray", wraplength=520, anchor="w")
-    app.openai_key_status_label.pack(anchor="w", pady=(0, UI_PAD_LG))
+    app.openai_key_status_label.pack(anchor="w", pady=(0, UI_PAD))
+
+    # OpenAI models (per-feature pickers; list cached from models.list)
+    ctk.CTkLabel(settings_card, text="AI models", font=ctk.CTkFont(family=UI_FONT_FAMILY, size=F.header, weight="bold")).pack(anchor="w", pady=(UI_PAD, 4))
+    ctk.CTkLabel(
+        settings_card,
+        text="Choose OpenAI models for Summary, Ask AI, and export naming. Recommended models refresh from your API key.",
+        font=ctk.CTkFont(family=UI_FONT_FAMILY, size=F.small),
+        text_color="gray",
+        wraplength=520,
+        anchor="w",
+    ).pack(anchor="w", pady=(0, 6))
+
+    app._openai_model_rows = []
+    app._openai_models_refreshing = False
+    _openai_feature_defs = (
+        ("summary", "openai_model_summary", "openai_model_summary_explicit", "AI Summary"),
+        ("ask", "openai_model_ask", "openai_model_ask_explicit", "Ask AI"),
+        ("export", "openai_model_export", "openai_model_export_explicit", "Export naming"),
+    )
+    for _feature, model_key, explicit_key, label in _openai_feature_defs:
+        row = ctk.CTkFrame(settings_card, fg_color="transparent")
+        row.pack(fill="x", pady=(0, 4))
+        ctk.CTkLabel(row, text=f"{label}:", font=ctk.CTkFont(family=UI_FONT_FAMILY, size=F.small), width=110, anchor="w").pack(side="left")
+        var = ctk.StringVar(value=app.settings.get(model_key, FALLBACK_MODEL))
+        menu = ctk.CTkOptionMenu(
+            row,
+            values=[FALLBACK_MODEL, CUSTOM_OPTION],
+            variable=var,
+            width=220,
+            font=ctk.CTkFont(family=UI_FONT_FAMILY, size=F.small),
+        )
+        menu.pack(side="left", padx=(0, UI_PAD))
+        custom_entry = ctk.CTkEntry(
+            row,
+            width=180,
+            height=28,
+            font=ctk.CTkFont(family=UI_FONT_FAMILY, size=F.small),
+            placeholder_text="Model ID",
+        )
+        app._openai_model_rows.append(
+            {
+                "feature": _feature,
+                "model_key": model_key,
+                "explicit_key": explicit_key,
+                "var": var,
+                "menu": menu,
+                "custom_entry": custom_entry,
+            }
+        )
+
+    models_action_row = ctk.CTkFrame(settings_card, fg_color="transparent")
+    models_action_row.pack(fill="x", pady=(4, 0))
+    app.openai_models_status_var = ctk.StringVar(value="")
+    app.openai_models_status_label = ctk.CTkLabel(
+        models_action_row,
+        textvariable=app.openai_models_status_var,
+        font=ctk.CTkFont(family=UI_FONT_FAMILY, size=F.tiny),
+        text_color="gray",
+        wraplength=400,
+        anchor="w",
+    )
+    app.openai_models_status_label.pack(side="left", padx=(0, UI_PAD))
+    app.openai_models_refresh_btn = ctk.CTkButton(
+        models_action_row,
+        text="Refresh models",
+        font=ctk.CTkFont(family=UI_FONT_FAMILY, size=F.small),
+        width=120,
+        height=32,
+        corner_radius=UI_RADIUS,
+        fg_color=COLORS["primary_fg"],
+        hover_color=COLORS["primary_hover"],
+    )
+    app.openai_models_refresh_btn.pack(side="left")
+    ctk.CTkLabel(settings_card, text="", height=8).pack()
+
+    def _openai_models_status_text(error, fetched_at, from_cache):
+        parts = []
+        if fetched_at:
+            try:
+                ts = datetime.fromtimestamp(float(fetched_at))
+                parts.append(f"Last updated {ts.strftime('%Y-%m-%d %H:%M')}")
+            except Exception:
+                pass
+        if error and from_cache:
+            parts.append("Couldn't refresh — using cached list")
+        elif error:
+            parts.append(f"Couldn't refresh: {error}")
+        return ". ".join(parts)
+
+    def _sync_openai_model_menus():
+        recommended = getattr(app, "_openai_recommended", None) or [FALLBACK_MODEL]
+        settings_changed = False
+        for row in app._openai_model_rows:
+            current = (app.settings.get(row["model_key"]) or FALLBACK_MODEL).strip()
+            if current.startswith("gpt-") and not is_chat_model(current):
+                current = recommended[0] if recommended else FALLBACK_MODEL
+                app.settings[row["model_key"]] = current
+                app.settings[row["explicit_key"]] = False
+                settings_changed = True
+            values = menu_values_for_model(recommended, current)
+            row["menu"].configure(values=values)
+            if current in values and current != CUSTOM_OPTION:
+                row["var"].set(current)
+                row["custom_entry"].pack_forget()
+            else:
+                row["var"].set(CUSTOM_OPTION)
+                row["custom_entry"].pack(side="left", padx=(0, UI_PAD))
+                row["custom_entry"].delete(0, "end")
+                row["custom_entry"].insert(0, current)
+        if settings_changed:
+            save_settings(app.settings)
+
+    def _set_openai_models_enabled(enabled):
+        state = "normal" if enabled else "disabled"
+        for row in app._openai_model_rows:
+            row["menu"].configure(state=state)
+            row["custom_entry"].configure(state=state)
+        app.openai_models_refresh_btn.configure(state=state if not app._openai_models_refreshing else "disabled")
+        if not enabled:
+            app.openai_models_status_var.set("Add an API key to load models.")
+
+    def _on_openai_model_picker_change(feature, choice):
+        row = next(r for r in app._openai_model_rows if r["feature"] == feature)
+        if choice == CUSTOM_OPTION:
+            row["custom_entry"].pack(side="left", padx=(0, UI_PAD))
+            row["custom_entry"].focus()
+            return
+        row["custom_entry"].pack_forget()
+        app.settings[row["model_key"]] = choice
+        app.settings[row["explicit_key"]] = True
+        save_settings(app.settings)
+
+    def _on_openai_custom_model_commit(feature):
+        row = next(r for r in app._openai_model_rows if r["feature"] == feature)
+        custom = (row["custom_entry"].get() or "").strip()
+        if not custom:
+            return
+        if custom.startswith("gpt-") and not is_chat_model(custom):
+            messagebox.showwarning(
+                "Unsupported model",
+                f"'{custom}' is not available for Chat Completions in this app "
+                "(*-pro models require OpenAI's Responses API). Pick a model from the list "
+                "or enter a chat-capable model ID.",
+                parent=root,
+            )
+            return
+        app.settings[row["model_key"]] = custom
+        app.settings[row["explicit_key"]] = True
+        save_settings(app.settings)
+        _sync_openai_model_menus()
+
+    for row in app._openai_model_rows:
+        feat = row["feature"]
+
+        def _make_picker_cmd(f):
+            return lambda choice: _on_openai_model_picker_change(f, choice)
+
+        row["menu"].configure(command=_make_picker_cmd(feat))
+        row["custom_entry"].bind("<FocusOut>", lambda _e, f=feat: _on_openai_custom_model_commit(f))
+        row["custom_entry"].bind("<Return>", lambda _e, f=feat: _on_openai_custom_model_commit(f))
+
+    def _refresh_openai_models(force=False):
+        api_key = get_openai_api_key()
+        if not api_key:
+            _set_openai_models_enabled(False)
+            return
+        if app._openai_models_refreshing:
+            return
+        app._openai_models_refreshing = True
+        app.openai_models_refresh_btn.configure(state="disabled")
+        app.openai_models_status_var.set("Refreshing…")
+        result_holder = []
+
+        def worker():
+            result_holder.append(refresh_models(api_key, force=force))
+
+        def check_done():
+            if not result_holder:
+                root.after(200, check_done)
+                return
+            model_ids, recommended, error, from_cache, fetched_at = result_holder[0]
+            app._openai_recommended = recommended or [FALLBACK_MODEL]
+            if apply_auto_upgrade(app.settings, recommended_default(model_ids)):
+                save_settings(app.settings)
+            app.openai_models_status_var.set(_openai_models_status_text(error, fetched_at, from_cache))
+            _sync_openai_model_menus()
+            app._openai_models_refreshing = False
+            app.openai_models_refresh_btn.configure(state="normal")
+
+        threading.Thread(target=worker, daemon=True).start()
+        root.after(200, check_done)
+
+    app._refresh_openai_models = _refresh_openai_models
+    app._set_openai_models_enabled = _set_openai_models_enabled
+    app.openai_models_refresh_btn.configure(command=lambda: _refresh_openai_models(force=True))
+
+    _cache = load_cache()
+    if _cache and _cache.get("model_ids"):
+        app._openai_recommended = recommended_models(_cache["model_ids"]) or [FALLBACK_MODEL]
+        app.openai_models_status_var.set(_openai_models_status_text(None, _cache.get("fetched_at"), True))
+    else:
+        app._openai_recommended = [FALLBACK_MODEL]
+    _sync_openai_model_menus()
+    _set_openai_models_enabled(bool(get_openai_api_key()))
 
     # Updates: check for new version (GitHub or JSON URL) and prompt to download
     ctk.CTkLabel(settings_card, text="Updates", font=ctk.CTkFont(family=UI_FONT_FAMILY, size=F.header, weight="bold")).pack(anchor="w", pady=(0, 4))
@@ -2274,6 +2500,11 @@ def main(splash_window=None):
     def _run_startup_update_check():
         _do_check_for_updates(from_startup=True)
     root.after(3000, _run_startup_update_check)
+
+    def _run_startup_openai_models_refresh():
+        if get_openai_api_key():
+            _refresh_openai_models(force=False)
+    root.after(4000, _run_startup_openai_models_refresh)
 
     ctk.CTkLabel(settings_card, text="Audio leveling", font=ctk.CTkFont(family=UI_FONT_FAMILY, size=F.header, weight="bold")).pack(anchor="w", pady=(0, 4))
     ctk.CTkLabel(

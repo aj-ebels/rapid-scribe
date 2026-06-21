@@ -7,6 +7,8 @@ import os
 import sys
 from pathlib import Path
 
+from .openai_models import FALLBACK_MODEL
+
 # Project root (parent of app/) for settings.json in dev
 _BASE = Path(__file__).resolve().parent.parent
 
@@ -61,6 +63,12 @@ def load_settings(default_model=None):
         "auto_save_delay_seconds": 1,
         "ui_scale": None,  # None = auto (DPI-based); else float 0.5–2.0 for manual scale
         "transcript_columns_visible": [True, True, True, True],  # [Notes, Transcript, Summary, Ask AI]
+        "openai_model_summary": FALLBACK_MODEL,
+        "openai_model_ask": FALLBACK_MODEL,
+        "openai_model_export": FALLBACK_MODEL,
+        "openai_model_summary_explicit": False,
+        "openai_model_ask_explicit": False,
+        "openai_model_export_explicit": False,
     }
     if not SETTINGS_FILE.exists():
         return out
@@ -113,6 +121,16 @@ def load_settings(default_model=None):
                     out["ui_scale"] = max(0.5, min(2.0, float(v)))
             if "transcript_columns_visible" in data and isinstance(data["transcript_columns_visible"], list) and len(data["transcript_columns_visible"]) >= 4:
                 out["transcript_columns_visible"] = [bool(data["transcript_columns_visible"][i]) for i in range(4)]
+            for key in ("openai_model_summary", "openai_model_ask", "openai_model_export"):
+                if key in data and isinstance(data[key], str) and data[key].strip():
+                    out[key] = data[key].strip()
+            for key in (
+                "openai_model_summary_explicit",
+                "openai_model_ask_explicit",
+                "openai_model_export_explicit",
+            ):
+                if key in data:
+                    out[key] = bool(data[key])
     except Exception:
         pass
     return out
