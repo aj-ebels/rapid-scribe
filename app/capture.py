@@ -477,24 +477,30 @@ def capture_worker_loopback(loopback_device_index, chunk_queue, stop_event, leve
                         _on_native_block(np.mean(raw, axis=1).astype(np.float32), rate, native_batch)
                     _finalize(rate)
         else:
-            # Linux/macOS: monitor source of the output device is a normal input
-            from .devices import get_default_loopback_device
-            if loopback_device_index is None:
-                loopback_device_index, err = get_default_loopback_device()
-                if err or loopback_device_index is None:
-                    raise RuntimeError(err or "No system-audio monitor source found.")
-            dev = sd.query_devices(loopback_device_index)
-            rate = int(dev.get("default_samplerate") or 48000)
-            ch = max(1, min(2, int(dev.get("max_input_channels") or 1)))
+            # Linux/macOS: monitor source via PortAudio if it's visible there,
+            # else straight from the sound server (parec).
+            from .devices import resolve_loopback_target
+            target, err = resolve_loopback_target(loopback_device_index)
+            if err or target is None:
+                raise RuntimeError(err or "No system-audio monitor source found.")
+            if target["backend"] == "portaudio":
+                dev = sd.query_devices(target["index"])
+                rate = int(dev.get("default_samplerate") or 48000)
+                ch = max(1, min(2, int(dev.get("max_input_channels") or 1)))
+                stream_cm = sd.InputStream(
+                    device=target["index"],
+                    channels=ch,
+                    samplerate=rate,
+                    blocksize=1024,
+                    dtype="float32",
+                )
+            else:
+                from .pulse_monitor import PulseMonitorStream
+                rate, ch = 48000, 2
+                stream_cm = PulseMonitorStream(target["source"], samplerate=rate, channels=ch)
             native_batch = max(int(rate * 0.05), 512)
 
-            with sd.InputStream(
-                device=loopback_device_index,
-                channels=ch,
-                samplerate=rate,
-                blocksize=1024,
-                dtype="float32",
-            ) as stream:
+            with stream_cm as stream:
                 while not stop_event.is_set():
                     try:
                         frames, _overflowed = stream.read(1024)

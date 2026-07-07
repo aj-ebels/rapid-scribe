@@ -188,9 +188,15 @@ sudo cp assets/icons/app.png /usr/share/icons/hicolor/256x256/apps/rapid-scribe.
 
 ## System-audio capture on Linux
 
-Meeting and Loopback modes read the **monitor source** of the output device (the input PulseAudio/PipeWire exposes as "Monitor of …"). No extra setup is needed on stock Ubuntu (PipeWire + `pipewire-pulse`) or PulseAudio desktops. If the app reports no monitor source:
+Meeting and Loopback modes read the **monitor source** of the output device — what the speakers are playing. Two backends, chosen automatically:
 
-- `pactl list sources short` — confirm a `….monitor` source exists.
+1. **PortAudio** — used when the PortAudio build includes the PulseAudio host API, so monitor sources appear as regular input devices ("Monitor of …").
+2. **Sound-server fallback (`parec`)** — most distro PortAudio builds are ALSA-only and never list monitor sources. The app then enumerates monitors with `pactl` and captures via a `parec` subprocess. Works with both PulseAudio and PipeWire (through `pipewire-pulse`). Requires `pulseaudio-utils` (preinstalled on desktop Ubuntu).
+
+If the app reports no monitor source:
+
+- `pactl list short sources` — confirm a `….monitor` source exists.
+- `which pactl parec` — if missing: `sudo apt-get install pulseaudio-utils`.
 - Headless/exotic setups: make sure `pipewire-pulse` (or `pulseaudio`) is running for the session.
 
 ## Distribution formats

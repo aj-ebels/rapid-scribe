@@ -41,10 +41,44 @@ def _list_monitor_inputs():
     return monitors, None
 
 
+# Monitor sources that only the sound server knows about (PortAudio built without
+# the PulseAudio host API) get synthetic negative indices so they fit everywhere a
+# PortAudio device index is stored/displayed: pactl index i <-> -(PULSE_INDEX_BASE + i).
+PULSE_INDEX_BASE = 1000
+
+
+def _encode_pulse_index(pactl_index: int) -> int:
+    return -(PULSE_INDEX_BASE + int(pactl_index))
+
+
+def _decode_pulse_index(synthetic_index: int) -> int:
+    return -int(synthetic_index) - PULSE_INDEX_BASE
+
+
+def is_pulse_synthetic_index(index) -> bool:
+    return index is not None and int(index) <= -PULSE_INDEX_BASE
+
+
 def list_loopback_devices():
     """List system-audio capture devices: WASAPI loopback on Windows, monitor sources elsewhere."""
     if sys.platform != "win32":
-        return _list_monitor_inputs()
+        monitors, err = _list_monitor_inputs()
+        if monitors or sys.platform == "darwin":
+            return monitors, err
+        # PortAudio sees no monitor sources (ALSA-only build) — ask the sound server directly.
+        from .pulse_monitor import list_pulse_monitor_sources
+        pulse_monitors, pulse_err = list_pulse_monitor_sources()
+        if pulse_monitors:
+            return [
+                {
+                    "index": _encode_pulse_index(m["pactl_index"]),
+                    "name": m["name"],
+                    "max_input_channels": 2,
+                    "default_samplerate": 48000,
+                }
+                for m in pulse_monitors
+            ], None
+        return [], err or pulse_err
     try:
         import pyaudiowpatch as pyaudio
         with pyaudio.PyAudio() as p:
@@ -65,15 +99,16 @@ def list_loopback_devices():
 
 NO_MONITOR_SOURCE_MSG = (
     "No system-audio monitor source found. System-audio capture needs PulseAudio or "
-    "PipeWire exposing a 'Monitor of …' input device. Check that audio is set up "
-    "(e.g. pipewire-pulse or pulseaudio is running) and that PortAudio can see it."
+    "PipeWire (with pipewire-pulse) running, plus the pulseaudio-utils tools "
+    "(pactl/parec). Check `pactl list short sources` for a '….monitor' source."
 )
 
 
 def get_default_loopback_device():
     """
     Resolve the system-audio capture device on Linux/macOS: prefer the monitor source
-    of the default output device, else the first monitor source.
+    of the default output device, else the first monitor source. PortAudio devices only —
+    for the Pulse-native fallback, use resolve_loopback_target().
     Returns (device_index, error_message).
     """
     monitors, err = _list_monitor_inputs()
@@ -91,6 +126,44 @@ def get_default_loopback_device():
             if out_name in (d.get("name") or "").lower():
                 return d["index"], None
     return monitors[0]["index"], None
+
+
+def resolve_loopback_target(loopback_device_index=None):
+    """
+    Resolve where system audio should be captured from on Linux/macOS.
+    Returns (target, error_message) where target is
+      {"backend": "portaudio", "index": int}   — monitor device visible to PortAudio, or
+      {"backend": "pulse", "source": str}      — sound-server source captured via parec.
+    """
+    # Explicit selection from settings
+    if loopback_device_index is not None:
+        if is_pulse_synthetic_index(loopback_device_index):
+            from .pulse_monitor import list_pulse_monitor_sources
+            pactl_index = _decode_pulse_index(loopback_device_index)
+            monitors, err = list_pulse_monitor_sources()
+            if err:
+                return None, err
+            for m in monitors:
+                if m["pactl_index"] == pactl_index:
+                    return {"backend": "pulse", "source": m["name"]}, None
+            if monitors:  # saved source is gone (indices shift across reboots) — use default
+                from .pulse_monitor import get_default_pulse_monitor
+                source, err = get_default_pulse_monitor()
+                if source:
+                    return {"backend": "pulse", "source": source}, None
+            return None, NO_MONITOR_SOURCE_MSG
+        return {"backend": "portaudio", "index": int(loopback_device_index)}, None
+
+    # Default: PortAudio monitor of the default output if visible…
+    index, _err = get_default_loopback_device()
+    if index is not None:
+        return {"backend": "portaudio", "index": index}, None
+    # …else fall back to the sound server directly.
+    from .pulse_monitor import get_default_pulse_monitor
+    source, pulse_err = get_default_pulse_monitor()
+    if source:
+        return {"backend": "pulse", "source": source}, None
+    return None, f"{NO_MONITOR_SOURCE_MSG} ({pulse_err})" if pulse_err else NO_MONITOR_SOURCE_MSG
 
 
 def get_default_monitor_device():

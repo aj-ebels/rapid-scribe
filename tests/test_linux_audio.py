@@ -93,11 +93,16 @@ def test_mixer_loopback_buffer_caps_growth():
 def test_loopback_worker_reports_error_when_no_monitor(monkeypatch):
     if sys.platform == "win32":
         pytest.skip("non-Windows path")
-    from app import capture
+    from app import capture, pulse_monitor
 
     monkeypatch.setattr(
         devices, "get_default_loopback_device",
         lambda: (None, devices.NO_MONITOR_SOURCE_MSG),
+    )
+    # Sound-server fallback also finds nothing
+    monkeypatch.setattr(
+        pulse_monitor, "get_default_pulse_monitor",
+        lambda: (None, "pactl not found"),
     )
     chunk_queue = queue.Queue()
     stop_event = threading.Event()

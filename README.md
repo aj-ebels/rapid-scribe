@@ -49,7 +49,7 @@ pip install -r requirements.txt
 python main.py
 ```
 
-Meeting and loopback modes capture system audio from the PulseAudio/PipeWire **monitor source** of your output device (the input named "Monitor of …"). Modern Ubuntu (PipeWire with `pipewire-pulse`) and PulseAudio desktops expose this out of the box. If no monitor device is found, the app falls back with a message — check `pactl list sources short` for a `.monitor` source.
+Meeting and loopback modes capture system audio from the PulseAudio/PipeWire **monitor source** of your output device. If PortAudio can see the monitor as an input device it is used directly; otherwise (the common case — most distro PortAudio builds are ALSA-only) the app automatically captures the monitor straight from the sound server using `parec`. That fallback needs the `pactl`/`parec` tools, preinstalled on desktop Ubuntu — if missing: `sudo apt-get install pulseaudio-utils`. To check your setup, `pactl list short sources` should show a `….monitor` source.
 
 **WSL2** — same as Linux; plain mic input works via WSLg. System-audio capture depends on what WSLg's PulseAudio exposes (often only `RDPSource`).
 
