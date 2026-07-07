@@ -14,7 +14,7 @@ from pathlib import Path
 import numpy as np
 import customtkinter as ctk
 import sounddevice as sd
-from tkinter import messagebox, filedialog, Canvas, Scrollbar, Toplevel, Label as TkLabel, simpledialog
+from tkinter import messagebox, filedialog, Canvas, Scrollbar, Toplevel, Label as TkLabel, simpledialog, PhotoImage
 
 try:
     from PIL import Image as PILImage
@@ -81,7 +81,9 @@ from .transcript_join import join_transcription_items
 
 if sys.platform == "win32":
     from .audio_mixer import AudioMixer
-    from .chunk_recorder import ChunkRecorder
+else:
+    from .audio_mixer_sd import AudioMixerSD as AudioMixer
+from .chunk_recorder import ChunkRecorder
 
 _PARAGRAPH_GAP_SEC = 6.0  # silence gap (seconds between emissions) that triggers a new paragraph
 # Live transcript “roll in”: one code point per tick (ms between ticks).
@@ -471,10 +473,6 @@ def start_stop(app):
         )
         app.level_thread.start()
     elif mode == AUDIO_MODE_LOOPBACK:
-        if sys.platform != "win32":
-            app.log.insert("end", "[Loopback] Only supported on Windows with pyaudiowpatch.\n")
-            app.log.see("end")
-            return
         app.capture_thread = threading.Thread(
             target=capture_worker_loopback,
             args=(loopback_idx, app.chunk_queue, app.stop_event, app.level_queue),
@@ -483,10 +481,6 @@ def start_stop(app):
         app.capture_threads = [app.capture_thread]
         app.status_var.set("Recording loopback & transcribing…")
     elif mode == AUDIO_MODE_MEETING:
-        if sys.platform != "win32":
-            app.log.insert("end", "[Meeting] Mic+loopback only supported on Windows.\n")
-            app.log.see("end")
-            return
         try:
             use_silence = _dev_cfg.CHUNKING_MODE == "vad"
             if use_silence:
@@ -843,12 +837,22 @@ def main(splash_window=None):
 
     root = ctk.CTk()
     root.title(f"Rapid Scribe v{app_version}")
-    _icon = _base / "icon.ico"
-    if _icon.exists():
-        try:
-            root.iconbitmap(str(_icon))
-        except Exception:
-            pass
+    if sys.platform == "win32":
+        _icon = _base / "icon.ico"
+        if _icon.exists():
+            try:
+                root.iconbitmap(str(_icon))
+            except Exception:
+                pass
+    else:
+        # .ico is not supported by Tk on Linux/macOS; use the PNG with iconphoto.
+        _icon_png = _base / "assets" / "icons" / "app.png"
+        if _icon_png.exists():
+            try:
+                root._app_icon_photo = PhotoImage(file=str(_icon_png))
+                root.iconphoto(True, root._app_icon_photo)
+            except Exception:
+                pass
     root.geometry("960x480")
     root.minsize(720, 380)
 
@@ -2535,7 +2539,7 @@ def main(splash_window=None):
     app.min_rms_slider.pack(anchor="w", pady=(0, UI_PAD_LG))
 
     ctk.CTkLabel(settings_card, text="Capture mode", font=ctk.CTkFont(family=UI_FONT_FAMILY, size=F.header, weight="bold")).pack(anchor="w", pady=(0, 4))
-    ctk.CTkLabel(settings_card, text="Meeting = in-process mic + loopback (PyAudioWPatch; loopback read only when data available). Loopback device below applies to Meeting mode.", font=ctk.CTkFont(family=UI_FONT_FAMILY, size=F.small), text_color="gray", wraplength=520, anchor="w").pack(anchor="w", pady=(0, UI_PAD))
+    ctk.CTkLabel(settings_card, text="Meeting = in-process mic + system audio (WASAPI loopback on Windows; PulseAudio/PipeWire monitor source on Linux). Loopback device below applies to Meeting mode.", font=ctk.CTkFont(family=UI_FONT_FAMILY, size=F.small), text_color="gray", wraplength=520, anchor="w").pack(anchor="w", pady=(0, UI_PAD))
     mode_values = ["Default input", "Loopback (system audio)", "Meeting (mic + loopback)"]
     mode_to_val = {AUDIO_MODE_DEFAULT: mode_values[0], AUDIO_MODE_LOOPBACK: mode_values[1], AUDIO_MODE_MEETING: mode_values[2]}
     val_to_mode = {v: k for k, v in mode_to_val.items()}

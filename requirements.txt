@@ -1,5 +1,6 @@
-# Audio: On Ubuntu/WSL2 install PortAudio first: sudo apt-get install libportaudio2 portaudio19-dev
-# Windows: for system/call audio (like Notion) install pyaudiowpatch for WASAPI loopback capture.
+# Audio: On Ubuntu/WSL2 install PortAudio and Tk first: sudo apt-get install libportaudio2 python3-tk
+# Windows: pyaudiowpatch (below) provides WASAPI loopback for system/call audio.
+# Linux: system audio is captured from the PulseAudio/PipeWire monitor source via sounddevice - no extra package.
 sounddevice>=0.4.6
 pyaudiowpatch>=0.2.12.7; sys_platform == "win32"
 numpy>=1.24.0

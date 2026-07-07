@@ -1,9 +1,13 @@
 # -*- mode: python ; coding: utf-8 -*-
-# PyInstaller spec for Rapid Scribe (Windows).
+# PyInstaller spec for Rapid Scribe (Windows and Linux).
 # Build: pyinstaller meetings.spec
-# Output: dist/Rapid Scribe/Rapid Scribe.exe (+ folder with dependencies and data)
+# Output (Windows): dist/Rapid Scribe/Rapid Scribe.exe (+ folder with dependencies and data)
+# Output (Linux):   dist/rapid-scribe/rapid-scribe (+ folder with dependencies and data)
 
 import os
+import sys
+
+APP_NAME = "Rapid Scribe" if sys.platform == "win32" else "rapid-scribe"
 
 # Data files to bundle (relative to spec directory)
 SPEC_DIR = os.path.dirname(os.path.abspath(SPEC))
@@ -40,7 +44,7 @@ hiddenimports = [
     "onnx_asr",
 ]
 # Windows-only
-if __import__("sys").platform == "win32":
+if sys.platform == "win32":
     hiddenimports.append("pyaudiowpatch")
 
 a = Analysis(
@@ -64,7 +68,7 @@ exe = EXE(
     a.scripts,
     [],
     exclude_binaries=True,
-    name="Rapid Scribe",
+    name=APP_NAME,
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
@@ -74,7 +78,7 @@ exe = EXE(
     target_arch=None,
     codesign_identity=None,
     entitlements_file=None,
-    icon=os.path.join(SPEC_DIR, "icon.ico"),
+    icon=os.path.join(SPEC_DIR, "icon.ico") if sys.platform == "win32" else None,
 )
 
 coll = COLLECT(
@@ -84,5 +88,5 @@ coll = COLLECT(
     strip=False,
     upx=False,
     upx_exclude=[],
-    name="Rapid Scribe",
+    name=APP_NAME,
 )

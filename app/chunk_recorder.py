@@ -9,6 +9,7 @@ Supports two chunking modes:
 """
 
 import os
+import tempfile
 import threading
 import uuid
 import numpy as np
@@ -64,7 +65,7 @@ class ChunkRecorder:
     ):
         self.sample_rate = sample_rate
         self.asr_sample_rate = asr_sample_rate
-        self.temp_dir = temp_dir or os.path.join(os.environ.get("TEMP", os.path.expanduser("~")), "MeetingsChunks")
+        self.temp_dir = temp_dir or os.path.join(os.environ.get("TEMP", tempfile.gettempdir()), "MeetingsChunks")
         self.on_chunk_ready = on_chunk_ready
         self._buffer = []
         self._buffer_frames = 0

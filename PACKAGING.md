@@ -1,6 +1,8 @@
-# Packaging for Windows
+# Packaging
 
-This document explains how to build **Rapid Scribe** into a Windows executable and folder that you can share so others can install and run it without Python.
+This document explains how to build **Rapid Scribe** into a distributable executable — a Windows installer or a Linux bundle — so others can install and run it without Python. Windows first; see **[Packaging for Linux](#packaging-for-linux)** at the end.
+
+# Packaging for Windows
 
 ## What you get
 
@@ -147,3 +149,53 @@ If you want a **single .exe** instead:
 - In `meetings.spec`, replace the `EXE` + `COLLECT` block with a single `EXE(..., onefile=True)` and include all binaries/datas in that `EXE`. Then theme and data paths will use the extracted `_MEIPASS` path (already handled in the GUI). You would still ship `prompts.json` and `icon.ico` next to the exe for first-run defaults, or copy them from the bundle at runtime.
 
 Keeping the **directory** build is usually simpler and avoids long startup (no unpack step).
+
+# Packaging for Linux
+
+The same PyInstaller spec builds on Linux; the output name is `dist/rapid-scribe/`.
+
+## Prerequisites (Ubuntu)
+
+```bash
+sudo apt-get install libportaudio2 python3-tk
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt -r requirements-build.txt
+```
+
+Build on the **oldest Ubuntu LTS you want to support** — PyInstaller output links against the build machine's glibc and does not run on older ones.
+
+## Build
+
+```bash
+./scripts/build_linux.sh
+# equivalent to: pyinstaller meetings.spec --noconfirm
+```
+
+Output: `dist/rapid-scribe/` — a self-contained folder. Run `./dist/rapid-scribe/rapid-scribe`.
+
+Users running the bundle need `libportaudio2` (bundled by PyInstaller in most cases, but installing it is the safe default) and a PulseAudio or PipeWire session for system-audio capture.
+
+## Desktop integration
+
+```bash
+sudo cp -r dist/rapid-scribe /opt/rapid-scribe
+sudo cp packaging/linux/rapid-scribe.desktop /usr/share/applications/
+sudo cp assets/icons/app.png /usr/share/icons/hicolor/256x256/apps/rapid-scribe.png
+```
+
+(For per-user install, use `~/.local/share/applications/` and `~/.local/share/icons/…` instead, and adjust `Exec=` in the `.desktop` file to the folder you copied the build into.)
+
+## System-audio capture on Linux
+
+Meeting and Loopback modes read the **monitor source** of the output device (the input PulseAudio/PipeWire exposes as "Monitor of …"). No extra setup is needed on stock Ubuntu (PipeWire + `pipewire-pulse`) or PulseAudio desktops. If the app reports no monitor source:
+
+- `pactl list sources short` — confirm a `….monitor` source exists.
+- Headless/exotic setups: make sure `pipewire-pulse` (or `pulseaudio`) is running for the session.
+
+## Distribution formats
+
+The `dist/rapid-scribe/` folder can be shipped as-is (tar.gz), or wrapped as:
+
+- **AppImage** — single-file, distro-agnostic; point `appimagetool` at an AppDir containing the build, the `.desktop` file, and the icon.
+- **.deb** — wrap the `/opt/rapid-scribe` + `.desktop` + icon layout above with `dpkg-deb`, listing `libportaudio2` and `python3-tk` as dependencies (Tk is bundled by PyInstaller, so the latter is optional).

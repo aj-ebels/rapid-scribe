@@ -1,6 +1,6 @@
 # Rapid Scribe 🎙️
 
-Real-time meeting capture and transcription for Windows (and WSL2). Record system audio and your mic, see live speech-to-text, and — if you bring your own OpenAI key — generates AI summaries and Q&A.
+Real-time meeting capture and transcription for Windows and Linux (and WSL2). Record system audio and your mic, see live speech-to-text, and — if you bring your own OpenAI key — generates AI summaries and Q&A.
 
 **License:** [MIT](LICENSE) — use, modify, and distribute under the terms in that file.
 
@@ -39,7 +39,19 @@ pip install -r requirements.txt
 python main.py
 ```
 
-**WSL2 / Linux** — install PortAudio first: `sudo apt-get install libportaudio2 portaudio19-dev`, then the same steps. Meeting/loopback capture is Windows-only.
+**Linux (Ubuntu)** — install PortAudio and Tk first, then the same steps:
+
+```bash
+sudo apt-get install libportaudio2 python3-tk
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
+python main.py
+```
+
+Meeting and loopback modes capture system audio from the PulseAudio/PipeWire **monitor source** of your output device (the input named "Monitor of …"). Modern Ubuntu (PipeWire with `pipewire-pulse`) and PulseAudio desktops expose this out of the box. If no monitor device is found, the app falls back with a message — check `pactl list sources short` for a `.monitor` source.
+
+**WSL2** — same as Linux; plain mic input works via WSLg. System-audio capture depends on what WSLg's PulseAudio exposes (often only `RDPSource`).
 
 On first run: download the model under **Models**, then drop an OpenAI key under **Settings** if you want the AI summarization and Q&A to function.
 
@@ -57,9 +69,17 @@ On first run: download the model under **Models**, then drop an OpenAI key under
 See **[PACKAGING.md](PACKAGING.md)** for the full ritual. TL;DR:
 
 ```powershell
+# Windows
 pip install -r requirements.txt -r requirements-build.txt
 pyinstaller meetings.spec
 # Compile installer.iss in Inno Setup → installer_output\Rapid Scribe vX.X-Setup.exe
+```
+
+```bash
+# Linux
+pip install -r requirements.txt -r requirements-build.txt
+./scripts/build_linux.sh
+# Output: dist/rapid-scribe/ — see PACKAGING.md for .desktop install
 ```
 
 ## 📚 Docs
@@ -72,6 +92,6 @@ pyinstaller meetings.spec
 ## 📋 Requirements
 
 - **Python** 3.10 or 3.11 (64-bit) — source install only
-- **64-bit Windows 10 or 11 on Intel/AMD (x64)** — Snapdragon / ARM Windows is not supported
-- **Windows** for meeting/loopback capture; WSL2 works fine for plain mic input
+- **64-bit Windows 10 or 11 on Intel/AMD (x64)** — Snapdragon / ARM Windows is not supported — or **Linux** (Ubuntu 22.04+ recommended) with PulseAudio or PipeWire
+- Meeting/loopback capture uses WASAPI loopback on Windows and the PulseAudio/PipeWire monitor source on Linux; on WSL2, system-audio capture depends on WSLg
 - **OpenAI API key** (optional) for AI summary and Q&A
