@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=Rapid Scribe
+Comment=Real-time meeting capture and transcription
+Exec=/opt/rapid-scribe/rapid-scribe
+Icon=rapid-scribe
+Terminal=false
+Categories=AudioVideo;Audio;Recorder;Utility;
+Keywords=meeting;transcription;recording;notes;

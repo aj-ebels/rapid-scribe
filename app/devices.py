@@ -29,10 +29,22 @@ def list_audio_devices():
     return devices, None
 
 
+def _list_monitor_inputs():
+    """Inputs that carry system audio on PulseAudio/PipeWire ('Monitor of …' sources)."""
+    devices, err = list_audio_devices()
+    if err:
+        return [], err
+    monitors = [
+        d for d in devices
+        if d.get("max_input_channels", 0) > 0 and "monitor" in (d.get("name") or "").lower()
+    ]
+    return monitors, None
+
+
 def list_loopback_devices():
-    """On Windows with pyaudiowpatch: list WASAPI loopback devices. Otherwise empty."""
+    """List system-audio capture devices: WASAPI loopback on Windows, monitor sources elsewhere."""
     if sys.platform != "win32":
-        return [], None
+        return _list_monitor_inputs()
     try:
         import pyaudiowpatch as pyaudio
         with pyaudio.PyAudio() as p:
@@ -49,6 +61,36 @@ def list_loopback_devices():
         return [], "pyaudiowpatch not installed"
     except Exception as e:
         return [], str(e)
+
+
+NO_MONITOR_SOURCE_MSG = (
+    "No system-audio monitor source found. System-audio capture needs PulseAudio or "
+    "PipeWire exposing a 'Monitor of …' input device. Check that audio is set up "
+    "(e.g. pipewire-pulse or pulseaudio is running) and that PortAudio can see it."
+)
+
+
+def get_default_loopback_device():
+    """
+    Resolve the system-audio capture device on Linux/macOS: prefer the monitor source
+    of the default output device, else the first monitor source.
+    Returns (device_index, error_message).
+    """
+    monitors, err = _list_monitor_inputs()
+    if err:
+        return None, err
+    if not monitors:
+        return None, NO_MONITOR_SOURCE_MSG
+    try:
+        default_out = sd.query_devices(kind="output")
+        out_name = (default_out.get("name") or "").lower()
+    except Exception:
+        out_name = ""
+    if out_name:
+        for d in monitors:
+            if out_name in (d.get("name") or "").lower():
+                return d["index"], None
+    return monitors[0]["index"], None
 
 
 def get_default_monitor_device():

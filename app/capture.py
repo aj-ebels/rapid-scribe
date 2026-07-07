@@ -295,25 +295,22 @@ def capture_worker_vad(device_index, chunk_queue, stop_event, leveler_settings=N
 
 
 def capture_worker_loopback(loopback_device_index, chunk_queue, stop_event, level_queue=None, settings=None):
-    """WASAPI loopback (PyAudioWPatch): resample to 16 kHz mono.
+    """System-audio capture, resampled to 16 kHz mono.
 
+    Windows: WASAPI loopback via PyAudioWPatch. Linux/macOS: the PulseAudio/PipeWire
+    monitor source of the output device, read as a normal sounddevice input.
     Pathway is identical to Default input — fixed windows or VAD — both controlled by
     dev_config.CHUNKING_MODE and dev_config.CHUNK_DURATION_SEC.  Loopback is never leveled.
     """
-    if sys.platform != "win32":
+    if sys.platform == "win32":
         try:
-            chunk_queue.put_nowait(("error", "Loopback is only supported on Windows with pyaudiowpatch."))
-        except queue.Full:
-            pass
-        return
-    try:
-        import pyaudiowpatch as pyaudio
-    except ImportError:
-        try:
-            chunk_queue.put_nowait(("error", "pyaudiowpatch not installed. pip install pyaudiowpatch"))
-        except queue.Full:
-            pass
-        return
+            import pyaudiowpatch as pyaudio
+        except ImportError:
+            try:
+                chunk_queue.put_nowait(("error", "pyaudiowpatch not installed. pip install pyaudiowpatch"))
+            except queue.Full:
+                pass
+            return
 
     # Fixed-window constants — only used when CHUNKING_MODE == "fixed".
     # CHUNK_DURATION_SEC has no effect on the VAD path.
@@ -405,70 +402,112 @@ def capture_worker_loopback(loopback_device_index, chunk_queue, stop_event, leve
         else:
             _feed_fixed(y)
 
-    try:
-        with pyaudio.PyAudio() as p:
-            if loopback_device_index is not None:
-                dev = p.get_device_info_by_index(loopback_device_index)
-            else:
-                wasapi_info = p.get_host_api_info_by_type(pyaudio.paWASAPI)
-                default_speakers = p.get_device_info_by_index(wasapi_info["defaultOutputDevice"])
-                if not default_speakers.get("isLoopbackDevice"):
-                    for loopback in p.get_loopback_device_info_generator():
-                        if default_speakers["name"] in loopback["name"]:
-                            default_speakers = loopback
-                            break
-                dev = default_speakers
-            rate = int(dev["defaultSampleRate"])
-            ch = int(dev["maxInputChannels"])
-            native_batch = max(int(rate * 0.05), 512)
-            pending = np.array([], dtype=np.float32)
+    # Native-rate batching state shared by both platform loops
+    pending = np.array([], dtype=np.float32)
 
-            with p.open(
-                format=pyaudio.paInt16,
+    def _on_native_block(mono_native: np.ndarray, rate: int, native_batch: int):
+        """Accumulate a native-rate mono block; resample and feed full batches to chunking."""
+        nonlocal pending
+        pending = np.concatenate([pending, mono_native])
+        if level_queue is not None and mono_native.size:
+            try:
+                level_queue.put_nowait(_rms32(mono_native))
+            except queue.Full:
+                pass
+        while len(pending) >= native_batch and not stop_event.is_set():
+            piece = pending[:native_batch]
+            pending = pending[native_batch:]
+            n_out = int(round(len(piece) * SAMPLE_RATE / rate))
+            _feed_16k(resample(piece, n_out).astype(np.float32))
+
+    def _finalize(rate: int):
+        """Feed leftover native samples, then flush the chunking remainder."""
+        nonlocal pending, fix_buf, fix_frames
+        if len(pending) > 0:
+            n_out = int(round(len(pending) * SAMPLE_RATE / rate))
+            _feed_16k(resample(pending, n_out).astype(np.float32))
+            pending = np.array([], dtype=np.float32)
+        if dev_config.CHUNKING_MODE == "vad":
+            if vad_buf_frames > 0:
+                _emit(np.concatenate(vad_buf).astype(np.float32), "loopback_vad")
+        else:
+            while fix_frames >= chunk_samples_16k:
+                mono, fix_buf = _take_front_mono_samples(fix_buf, chunk_samples_16k)
+                fix_frames = sum(len(x) for x in fix_buf)
+                _emit(mono, "loopback_fixed")
+            if fix_frames > 0:
+                mono, fix_buf = _take_front_mono_samples(fix_buf, fix_frames)
+                _emit(mono, "loopback_fixed")
+
+    try:
+        if sys.platform == "win32":
+            with pyaudio.PyAudio() as p:
+                if loopback_device_index is not None:
+                    dev = p.get_device_info_by_index(loopback_device_index)
+                else:
+                    wasapi_info = p.get_host_api_info_by_type(pyaudio.paWASAPI)
+                    default_speakers = p.get_device_info_by_index(wasapi_info["defaultOutputDevice"])
+                    if not default_speakers.get("isLoopbackDevice"):
+                        for loopback in p.get_loopback_device_info_generator():
+                            if default_speakers["name"] in loopback["name"]:
+                                default_speakers = loopback
+                                break
+                    dev = default_speakers
+                rate = int(dev["defaultSampleRate"])
+                ch = int(dev["maxInputChannels"])
+                native_batch = max(int(rate * 0.05), 512)
+
+                with p.open(
+                    format=pyaudio.paInt16,
+                    channels=ch,
+                    rate=rate,
+                    frames_per_buffer=1024,
+                    input=True,
+                    input_device_index=dev["index"],
+                ) as stream:
+                    while not stop_event.is_set():
+                        try:
+                            data = stream.read(1024, exception_on_overflow=False)
+                        except Exception:
+                            break
+                        block = np.frombuffer(data, dtype=np.int16)
+                        if block.size == 0:
+                            continue
+                        raw = block.reshape(-1, ch).astype(np.float64) / 32768.0
+                        _on_native_block(np.mean(raw, axis=1).astype(np.float32), rate, native_batch)
+                    _finalize(rate)
+        else:
+            # Linux/macOS: monitor source of the output device is a normal input
+            from .devices import get_default_loopback_device
+            if loopback_device_index is None:
+                loopback_device_index, err = get_default_loopback_device()
+                if err or loopback_device_index is None:
+                    raise RuntimeError(err or "No system-audio monitor source found.")
+            dev = sd.query_devices(loopback_device_index)
+            rate = int(dev.get("default_samplerate") or 48000)
+            ch = max(1, min(2, int(dev.get("max_input_channels") or 1)))
+            native_batch = max(int(rate * 0.05), 512)
+
+            with sd.InputStream(
+                device=loopback_device_index,
                 channels=ch,
-                rate=rate,
-                frames_per_buffer=1024,
-                input=True,
-                input_device_index=dev["index"],
+                samplerate=rate,
+                blocksize=1024,
+                dtype="float32",
             ) as stream:
                 while not stop_event.is_set():
                     try:
-                        data = stream.read(1024, exception_on_overflow=False)
+                        frames, _overflowed = stream.read(1024)
                     except Exception:
                         break
-                    block = np.frombuffer(data, dtype=np.int16)
-                    if block.size == 0:
+                    if frames is None or len(frames) == 0:
                         continue
-                    raw = block.reshape(-1, ch).astype(np.float64) / 32768.0
-                    mono_native = np.mean(raw, axis=1).astype(np.float32)
-                    pending = np.concatenate([pending, mono_native])
-                    if level_queue is not None and mono_native.size:
-                        try:
-                            level_queue.put_nowait(_rms32(mono_native))
-                        except queue.Full:
-                            pass
-                    while len(pending) >= native_batch and not stop_event.is_set():
-                        piece = pending[:native_batch]
-                        pending = pending[native_batch:]
-                        n_out = int(round(len(piece) * SAMPLE_RATE / rate))
-                        _feed_16k(resample(piece, n_out).astype(np.float32))
-
-                if len(pending) > 0:
-                    n_out = int(round(len(pending) * SAMPLE_RATE / rate))
-                    _feed_16k(resample(pending, n_out).astype(np.float32))
-
-                # Flush remainder
-                if dev_config.CHUNKING_MODE == "vad":
-                    if vad_buf_frames > 0:
-                        _emit(np.concatenate(vad_buf).astype(np.float32), "loopback_vad")
-                else:
-                    while fix_frames >= chunk_samples_16k:
-                        mono, fix_buf = _take_front_mono_samples(fix_buf, chunk_samples_16k)
-                        fix_frames = sum(len(x) for x in fix_buf)
-                        _emit(mono, "loopback_fixed")
-                    if fix_frames > 0:
-                        mono, fix_buf = _take_front_mono_samples(fix_buf, fix_frames)
-                        _emit(mono, "loopback_fixed")
+                    if frames.ndim > 1 and frames.shape[1] > 1:
+                        mono_native = frames.mean(axis=1).astype(np.float32)
+                    else:
+                        mono_native = np.asarray(frames, dtype=np.float32).reshape(-1)
+                    _on_native_block(mono_native, rate, native_batch)
+                _finalize(rate)
 
     except Exception as e:
         diag("capture_error", worker="loopback", error=str(e))
