@@ -6,6 +6,7 @@ prompts.json
 meetings.json
 .env
 __pycache__/
-.claude/
+.claude/*
+!.claude/settings.json
 dist-electron/
 node-modules/
