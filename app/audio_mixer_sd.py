@@ -18,7 +18,8 @@ import numpy as np
 import sounddevice as sd
 from scipy.signal import resample
 from .audio_leveler import AudioLeveler, AudioLevelerConfig
-from .devices import get_default_loopback_device
+from .devices import resolve_loopback_target
+from .pulse_monitor import PulseMonitorStream
 
 log = logging.getLogger(__name__)
 
@@ -81,7 +82,7 @@ class AudioMixerSD:
         self._loopback_buffer = deque()
         self._loopback_buffer_samples = 0
         self._mic_device_index = None
-        self._loopback_device_index = None
+        self._loopback_target = None  # {"backend": "portaudio", "index"} or {"backend": "pulse", "source"}
         self._mic_read_errors = 0
         self._last_reopen_attempt = 0.0
 
@@ -152,13 +153,20 @@ class AudioMixerSD:
             blocksize=self.frames_per_read,
             dtype="float32",
         )
-        self._loopback_stream = sd.InputStream(
-            device=self._loopback_device_index,
-            channels=self._loopback_channels,
-            samplerate=self._loopback_sample_rate,
-            blocksize=self.frames_per_read,
-            dtype="float32",
-        )
+        if self._loopback_target["backend"] == "portaudio":
+            self._loopback_stream = sd.InputStream(
+                device=self._loopback_target["index"],
+                channels=self._loopback_channels,
+                samplerate=self._loopback_sample_rate,
+                blocksize=self.frames_per_read,
+                dtype="float32",
+            )
+        else:
+            self._loopback_stream = PulseMonitorStream(
+                self._loopback_target["source"],
+                samplerate=self._loopback_sample_rate,
+                channels=self._loopback_channels,
+            )
         self._mic_stream.start()
         self._loopback_stream.start()
 
@@ -302,22 +310,19 @@ class AudioMixerSD:
                 mic_device_index = sd.query_devices(kind="input")["index"]
             except Exception as e:
                 raise RuntimeError("No default microphone found: %s" % e) from e
-        if loopback_device_index is None:
-            loopback_device_index, err = get_default_loopback_device()
-            if err or loopback_device_index is None:
-                raise RuntimeError(err or "No system-audio monitor source found.")
+        target, err = resolve_loopback_target(loopback_device_index)
+        if err or target is None:
+            raise RuntimeError(err or "No system-audio monitor source found.")
+        self._loopback_target = target
 
         try:
             mic_info = sd.query_devices(mic_device_index)
-            loopback_info = sd.query_devices(loopback_device_index)
         except Exception as e:
             raise RuntimeError("Could not query audio devices: %s" % e) from e
 
         self._mic_device_index = int(mic_device_index)
-        self._loopback_device_index = int(loopback_device_index)
         # Mono is enough for ASR; cap at stereo so odd ALSA devices don't open 32 channels.
         self._mic_channels = max(1, min(2, int(mic_info.get("max_input_channels") or 1)))
-        self._loopback_channels = max(1, min(2, int(loopback_info.get("max_input_channels") or 1)))
 
         # Open each device at its native default sample rate (avoids errors when rates differ)
         def _device_rate(info, fallback=48000):
@@ -325,7 +330,19 @@ class AudioMixerSD:
             r = int(r) if r else fallback
             return r if r > 0 else fallback
 
-        self._loopback_sample_rate = _device_rate(loopback_info)
+        if target["backend"] == "portaudio":
+            try:
+                loopback_info = sd.query_devices(target["index"])
+            except Exception as e:
+                raise RuntimeError("Could not query audio devices: %s" % e) from e
+            loopback_name = loopback_info.get("name")
+            self._loopback_channels = max(1, min(2, int(loopback_info.get("max_input_channels") or 1)))
+            self._loopback_sample_rate = _device_rate(loopback_info)
+        else:
+            # Sound-server capture: parec resamples to whatever we ask for.
+            loopback_name = target["source"]
+            self._loopback_channels = 2
+            self._loopback_sample_rate = 48000
         self._mic_sample_rate = _device_rate(mic_info)
         self.sample_rate = self._mic_sample_rate  # output rate = mic rate; loopback resampled in loop
 
@@ -340,7 +357,7 @@ class AudioMixerSD:
                 "Could not open capture streams (mic=%r %d Hz, monitor=%r %d Hz): %s"
                 % (
                     mic_info.get("name"), self._mic_sample_rate,
-                    loopback_info.get("name"), self._loopback_sample_rate, e,
+                    loopback_name, self._loopback_sample_rate, e,
                 )
             ) from e
 
