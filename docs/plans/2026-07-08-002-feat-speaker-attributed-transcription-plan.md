@@ -71,6 +71,23 @@ The pipeline downmixes stereo→mono *before* ASR (`_write_chunk`, `app/chunk_re
 
 ---
 
+## Prior Art & Lessons (2026-07-08 research)
+
+Comparable open-source local meeting notetakers, and what each teaches us:
+
+| Project | Stack | Lesson for Rapid Scribe |
+|---|---|---|
+| **[Meetily](https://github.com/Zackriya-Solutions/meetily)** — our acknowledged ancestor (`main.py` docstring cites it) | Parakeet/Whisper via whisper.cpp, **dual mic + system capture with "intelligent ducking & clipping prevention"**, Ollama/cloud summaries, Rust | Their ducking/clipping mix strategy is directly relevant to `audio_mixer.py` / `audio_leveler.py`. Their **diarization is still "coming soon"**, so shipping Phase B puts us *ahead* of the upstream — worth watching their PRs, as they'll hit the same whisper.cpp/Parakeet timestamp-alignment problems. |
+| **[OpenWhispr](https://openwhispr.com/blog/local-speaker-diarization)** — shipped 100% local diarization (Apr 2026) | Local ONNX diarization + **speaker fingerprints / voice enrollment in a local SQLite file** | Most instructive for us. Their voiceprint store makes speaker identity **stable across meetings** ("Alice" stays "Alice"), not just per-session `Speaker N`. Motivates **Phase C** below. |
+| **[Hyprnote](https://github.com/fastrepl/hyprnote)** (YC S25) | Tauri/Rust, local-first, own local Whisper server ("owhisper") | Broader UX/architecture reference for a polished local-first notetaker; internals largely undisclosed. |
+| **[WhisperX](https://github.com/m-bain/whisperX)** — canonical diarization blueprint | faster-whisper → wav2vec2 forced alignment → pyannote → temporal word→speaker assignment | **Validates our Phase B design exactly.** Its explicit lesson: get accurate **word timestamps first**, *then* diarize, *then* assign each word to the segment its timestamp falls inside. That is precisely KTD6/R8/R9. |
+
+**Library landscape considered:** **sherpa-onnx** (our pick — ONNX runtime we already ship, offline, CPU, proven in OpenWhispr-class apps); **pyannote.audio** (accuracy standard used by WhisperX, but PyTorch + gated HF models — keep only as a quality *benchmark* to measure our gap, per Risks); **diart** (streaming diarization — only relevant if we ever want *live* speaker labels, which sherpa-onnx can't do); **NeMo / 3D-Speaker / WeSpeaker** (sources of the embedding backbones sherpa-onnx consumes).
+
+**Our differentiator:** nearly all of these mix mic + system audio to mono and rely on *blind* diarization to recover the local-vs-remote split. Rapid Scribe already captures **L=mic / R=loopback separately**, so Phase A's "Me vs Others" is free *and more reliable* than diarization for that distinction. Keeping the channel anchor (KTD7) while layering sherpa-onnx only on the remote side is a genuinely stronger design than a pure-diarization pipeline — none of the comparable apps do this.
+
+---
+
 ## Implementation — Phase A (channel attribution, live)
 
 **A1. `app/chunk_recorder.py` — tag the dominant source.**
@@ -127,6 +144,22 @@ Add `diarization_enabled` (default off until models present), `diarization_num_s
 
 ---
 
+## Implementation — Phase C (voiceprint enrollment, cross-meeting identity) — *stretch*
+
+Inspired by OpenWhispr: turn ephemeral per-session `Speaker N` labels into **persistent named identities**.
+
+**C1. Local voiceprint store.** A local SQLite (or JSON) DB in the app-data dir (`_get_app_data_dir()`, `app/meetings_storage.py:16`) mapping speaker names → averaged embedding vectors. Nothing leaves the device.
+
+**C2. Enrollment.** After a diarized meeting, let the user rename a `Speaker N` → a real name; persist that cluster's mean embedding under the name. Also allow explicit enrollment from a short sample.
+
+**C3. Auto-labeling.** In the Phase B alignment step, before assigning `Speaker N`, compare each remote cluster's embedding against enrolled voiceprints (cosine similarity ≥ threshold) and use the matched name instead. Unmatched clusters fall back to `Speaker N`.
+
+**C4. Settings/UI.** Manage enrolled speakers (list/rename/delete), similarity threshold, and an on/off toggle. Keep it optional — Phase B works fully without any enrollment.
+
+Deferred until Phase B is validated; listed so the storage/embedding shapes in Phase B are designed with this in mind (retain per-cluster mean embeddings, not just labels).
+
+---
+
 ## Testing & Verification
 
 - `pytest` unit coverage per R13/B9 (logic only, no Tk).
@@ -145,18 +178,19 @@ Add `diarization_enabled` (default off until models present), `diarization_num_s
 | `onnx-asr` timestamp behavior varies by model/version | Verify `.with_timestamps()` on the shipped Parakeet v2/v3 int8 build before wiring B3; fall back to per-chunk offsets if unavailable. |
 | Diarization CPU cost on long meetings | Off-thread at stop with progress UI; document expected wait; allow disabling. |
 | Speaker labels pollute AI summary prompts | Confirm `{{transcript}}` substitution handles labeled text; likely a benefit (summaries can attribute quotes). |
+| sherpa-onnx accuracy gap vs pyannote unknown | **Benchmark sherpa-onnx against pyannote on 2–3 real recordings before committing Phase B**, to quantify the accuracy we trade for the offline/lightweight win (WhisperX uses pyannote as its standard). |
 
 ---
 
 ## Open Questions
 
-1. Default display names — "Me"/"Others", or prompt for the user's name once?
-2. Should the retained session WAV (R6) be kept after diarization (re-run later / debugging) or always deleted?
+1. Default display names — "Me"/"Others", or prompt for the user's name once? *(Phase C voiceprint enrollment is the longer-term answer for remote names.)*
+2. Should the retained session WAV (R6) be kept after diarization (re-run later / debugging / enrollment) or always deleted?
 3. Auto-run diarization on every stop when enabled, or a manual **"Identify speakers"** button per meeting?
-4. Let users rename `Speaker N` → real names post-hoc (persisted in `speaker_map`)?
+4. Rename `Speaker N` → real names post-hoc — one-off in `speaker_map` (Phase B), or persisted as voiceprints across meetings (Phase C)?
 
 ---
 
 ## Rollout
 
-Ship **Phase A** first as a self-contained PR (small, offline, high value). Land **Phase B** as a follow-up once diarization models and packaging are validated. Both go on branch `claude/meeting-transcription-speaker-6vfz7w`.
+Ship **Phase A** first as a self-contained PR (small, offline, high value). Land **Phase B** as a follow-up once diarization models and packaging are validated — and after the sherpa-onnx-vs-pyannote accuracy benchmark. **Phase C** (voiceprint enrollment, OpenWhispr-style) is a later stretch; design Phase B's embedding storage so it can plug in. All on branch `claude/meeting-transcription-speaker-6vfz7w`.
