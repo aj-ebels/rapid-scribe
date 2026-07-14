@@ -445,6 +445,70 @@ def uninstall_transcription_model(repo_id, revision_hashes):
 # Can be overridden by settings["min_rms_transcribe"] (e.g. raise to 0.005–0.006 for noisier mics).
 MIN_RMS_TRANSCRIBE_DEFAULT = 0.005
 
+# Sentinel on chunk_queue: reset adaptive gate state at the start of each recording session.
+TRANSCRIPTION_GATE_RESET = ("gate_reset",)
+
+# Adaptive gate tuning — only learn the noise floor from quiet chunks (not speech-level loopback).
+_ADAPTIVE_LEARN_RMS_MULTIPLIER = 2.0
+_ADAPTIVE_THRESHOLD_MULTIPLIER = 2.5
+_ADAPTIVE_THRESHOLD_CAP_MULTIPLIER = 3.5
+_ADAPTIVE_NOISE_FLOOR_ALPHA = 0.05
+
+
+def initial_transcription_noise_floor(min_rms: float) -> float:
+    """Starting noise floor when a recording session begins."""
+    return max(0.0025, float(min_rms))
+
+
+def is_transcription_control_item(item) -> bool:
+    """True for queue control tuples (errors, gate resets), not audio chunks."""
+    return isinstance(item, tuple) and len(item) >= 1 and item[0] in ("error", TRANSCRIPTION_GATE_RESET[0])
+
+
+def update_transcription_gate(
+    min_rms: float,
+    noise_floor: float,
+    rms: float | None,
+    *,
+    adaptive_gate: bool,
+) -> tuple[float, float]:
+    """
+    Return (effective_min_rms, new_noise_floor).
+
+    Learns only from genuinely quiet chunks so meeting loopback speech (~0.03–0.05 RMS)
+    does not ratchet the gate closed over long calls.
+    """
+    floor = float(noise_floor)
+    base = float(min_rms)
+    if rms is None or not adaptive_gate:
+        return base, floor
+
+    learn_ceiling = base * _ADAPTIVE_LEARN_RMS_MULTIPLIER
+    if float(rms) <= learn_ceiling:
+        a = _ADAPTIVE_NOISE_FLOOR_ALPHA
+        floor = (1.0 - a) * floor + a * float(rms)
+        floor = max(0.0025, min(floor, learn_ceiling))
+
+    effective = max(base, floor * _ADAPTIVE_THRESHOLD_MULTIPLIER)
+    cap = base * _ADAPTIVE_THRESHOLD_CAP_MULTIPLIER
+    effective = min(effective, cap)
+    return effective, floor
+
+
+def queue_transcription_gate_reset(chunk_queue) -> None:
+    """Tell the transcription worker to reset adaptive gate state for a new recording."""
+    try:
+        chunk_queue.put_nowait(TRANSCRIPTION_GATE_RESET)
+    except queue.Full:
+        try:
+            chunk_queue.get_nowait()
+        except queue.Empty:
+            pass
+        try:
+            chunk_queue.put_nowait(TRANSCRIPTION_GATE_RESET)
+        except queue.Full:
+            pass
+
 
 def start_transcription_subprocess(chunk_queue, text_queue, stop_event, model_id=None):
     """
@@ -477,13 +541,20 @@ def transcription_worker(chunk_queue, text_queue, stop_event, model_id=None):
     min_rms_refresh_every_sec = 3.0
     last_min_rms_refresh = 0.0
     adaptive_gate = True
-    noise_floor = max(0.0025, min_rms)
+    noise_floor = initial_transcription_noise_floor(min_rms)
     gate_hangover_chunks = 0
     hangover_left = 0
     last_emit_time = 0.0  # monotonic time of the last successful text emission
     while not stop_event.is_set():
         try:
             item = chunk_queue.get(timeout=1.0)
+            if item == TRANSCRIPTION_GATE_RESET or (
+                isinstance(item, tuple) and len(item) >= 1 and item[0] == TRANSCRIPTION_GATE_RESET[0]
+            ):
+                noise_floor = initial_transcription_noise_floor(min_rms)
+                hangover_left = 0
+                diag("transcription_gate_reset", noise_floor=round(noise_floor, 6))
+                continue
             if isinstance(item, tuple) and item[0] == "error":
                 diag("transcription_received_error", msg=item[1])
                 text_queue.put_nowait(("[Error] " + item[1] + "\n"))
@@ -500,12 +571,9 @@ def transcription_worker(chunk_queue, text_queue, stop_event, model_id=None):
                 adaptive_gate = bool(cfg.get("adaptive_audio_gating", True))
                 gate_hangover_chunks = max(0, min(8, int(cfg.get("audio_gate_hangover_chunks", 0))))
                 last_min_rms_refresh = now
-            effective_min_rms = min_rms
-            if rms is not None and adaptive_gate:
-                learn_upper = max(min_rms * 5.0, noise_floor * 1.8)
-                if rms <= learn_upper:
-                    noise_floor = 0.95 * noise_floor + 0.05 * float(rms)
-                effective_min_rms = max(min_rms, noise_floor * 4.5)
+            effective_min_rms, noise_floor = update_transcription_gate(
+                min_rms, noise_floor, rms, adaptive_gate=adaptive_gate
+            )
             if rms is not None and rms < effective_min_rms:
                 if hangover_left > 0:
                     hangover_left -= 1
