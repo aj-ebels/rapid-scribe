@@ -37,6 +37,7 @@ from .transcription import (
     download_transcription_model,
     start_transcription_subprocess,
     run_startup_check_worker,
+    queue_transcription_gate_reset,
 )
 from .capture import (
     capture_worker,
@@ -102,8 +103,8 @@ def _discard_pending_chunks(chunk_queue):
     while True:
         try:
             item = chunk_queue.get_nowait()
-            # item is (wav_path, rms) or ("error", msg) — delete the file if it's a real path.
-            if isinstance(item, tuple) and len(item) >= 1 and isinstance(item[0], str) and item[0] != "error":
+            # item is (wav_path, rms), ("error", msg), or ("gate_reset",) — delete only real paths.
+            if isinstance(item, tuple) and len(item) >= 1 and isinstance(item[0], str) and item[0] not in ("error", "gate_reset"):
                 try:
                     _Path(item[0]).unlink(missing_ok=True)
                 except Exception:
@@ -555,6 +556,7 @@ def start_stop(app):
         app.transcription_process = start_transcription_subprocess(
             app.chunk_queue, app.text_queue, app.transcription_stop_event, model_id
         )
+    queue_transcription_gate_reset(app.chunk_queue)
     app.running = True
     _start = getattr(app, "_start_transcript_pulse", None)
     if _start is not None:
