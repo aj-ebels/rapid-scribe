@@ -36,16 +36,16 @@
   "export_prepend_meeting_date": true,
   "auto_generate_summary_when_stopping": false,
   "auto_save_delay_seconds": 1,
-  "ui_scale": 1.5,
+  "ui_scale": null,
   "transcript_columns_visible": [
     true,
     true,
     true,
     false
   ],
-  "openai_model_summary": "gpt-5.5",
-  "openai_model_ask": "gpt-5.5",
-  "openai_model_export": "gpt-5.5",
+  "openai_model_summary": "gpt-5.6-terra",
+  "openai_model_ask": "gpt-5.6-terra",
+  "openai_model_export": "gpt-5.6-terra",
   "openai_model_summary_explicit": false,
   "openai_model_ask_explicit": false,
   "openai_model_export_explicit": false
