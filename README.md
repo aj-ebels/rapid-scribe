@@ -10,12 +10,10 @@ Real-time meeting capture and transcription for Windows and Linux (and WSL2). Re
 2. If Windows shows **“Windows protected your PC”**, choose **More info** → **Run anyway** (unsigned installer; only proceed if you trust this project).
 3. After install, pin or add a shortcut as you like. Uninstall anytime via **Settings → Apps**.
 
-**Requires 64-bit Windows 10 or 11 on Intel or AMD (x64).** Snapdragon / ARM Copilot+ PCs are not supported. If the installer reports an unsupported Windows version, see [PACKAGING.md — Troubleshooting](PACKAGING.md#troubleshooting).
-
 ### One-time setup
 
 1. **Models** tab — download the transcription model (once, ~650 MB).
-2. **Settings** tab — paste your **OpenAI API key** and **Save** (optional but needed for AI Summary and Ask AI). Optionally pick OpenAI models for Summary, Ask AI, and export naming. Calls use your key and incur OpenAI usage; the app rate-limits requests to reduce accidental spam.
+2. **Settings** tab — paste your **OpenAI API key** (create one [here](https://platform.openai.com/api-keys) and **Save** (optional but needed for AI Summary and Ask AI). Optionally pick OpenAI models for Summary, Ask AI, and export naming. Calls use your key and incur OpenAI usage; the app rate-limits requests to reduce accidental spam.
 3. For summaries, **Call Summary** is the default AI prompt (Notion-style output). Add your own prompts under **AI Prompts** if you like.
 
 ### Using the app
@@ -27,6 +25,8 @@ Real-time meeting capture and transcription for Windows and Linux (and WSL2). Re
 5. **Export** — pick a filename, export Markdown (summary, notes, full transcript).
 
 The app checks for updates when a new release ships.
+
+**Requires 64-bit Windows 10 or 11 on Intel or AMD (x64).** Snapdragon / ARM Copilot+ PCs are not supported. If the installer reports an unsupported Windows version, see [PACKAGING.md — Troubleshooting](PACKAGING.md#troubleshooting).
 
 ## 🛠️ Run from source (for development)
 
