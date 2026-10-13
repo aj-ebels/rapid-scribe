@@ -2184,7 +2184,7 @@ def main(splash_window=None):
 
     # OpenAI API key (stored securely in user app data)
     ctk.CTkLabel(settings_card, text="OpenAI API key", font=ctk.CTkFont(family=UI_FONT_FAMILY, size=F.header, weight="bold")).pack(anchor="w", pady=(0, 4))
-    ctk.CTkLabel(settings_card, text="Required for AI Summary. Stored on this device only.", font=ctk.CTkFont(family=UI_FONT_FAMILY, size=F.small), text_color="gray", wraplength=520, anchor="w").pack(anchor="w", pady=(0, 6))
+    ctk.CTkLabel(settings_card, text="Required for AI Summary. Stored on this device only. Calls bill prepaid API credits on the key's organization. A ChatGPT subscription does not cover them, and a new key from the same organization will not either.", font=ctk.CTkFont(family=UI_FONT_FAMILY, size=F.small), text_color="gray", wraplength=520, anchor="w").pack(anchor="w", pady=(0, 6))
     api_key_row = ctk.CTkFrame(settings_card, fg_color="transparent")
     api_key_row.pack(fill="x", pady=(0, UI_PAD_LG))
     app.openai_key_entry = ctk.CTkEntry(api_key_row, width=400, height=32, font=ctk.CTkFont(family=UI_FONT_FAMILY, size=F.small), show="•", placeholder_text="Enter key to save, or leave blank to keep existing")

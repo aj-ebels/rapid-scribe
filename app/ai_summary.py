@@ -26,6 +26,41 @@ def _is_not_chat_model_error(exc):
     return "not a chat model" in msg or "v1/completions" in msg
 
 
+def _openai_error_code(exc):
+    code = str(getattr(exc, "code", None) or "").strip().lower()
+    if code:
+        return code
+    body = getattr(exc, "body", None)
+    if isinstance(body, dict):
+        err = body.get("error")
+        if isinstance(err, dict) and err.get("code"):
+            return str(err.get("code")).strip().lower()
+    return ""
+
+
+def format_openai_api_error(exc):
+    """Turn a raw OpenAI exception into a message the user can act on."""
+    raw = (getattr(exc, "message", None) or str(exc) or "").strip()
+    code = _openai_error_code(exc)
+    low = raw.lower()
+    if (
+        code == "credit_balance_exhausted"
+        or "credit_balance_exhausted" in low
+        or "no credits remaining" in low
+    ):
+        return (
+            "OpenAI rejected this request because the organization for the saved API key "
+            "has no prepaid API credits left (credit_balance_exhausted). The selected model "
+            "is not the problem, and a ChatGPT subscription does not refill this balance.\n\n"
+            "A new API key from this same organization will fail the same way. "
+            "Add credits, then try again:\n"
+            "https://platform.openai.com/settings/organization/billing/\n\n"
+            "If that page already shows a balance, this key belongs to a different organization "
+            "or project. Create a key there and save it in Settings."
+        )
+    return raw or "OpenAI request failed."
+
+
 def _create_completion(client, model, messages):
     kwargs = completion_kwargs(model, messages)
     try:
@@ -77,7 +112,7 @@ def generate_ai_summary(api_key, prompt_template, transcript, manual_notes="", m
         content = response.choices[0].message.content
         return True, (content or "").strip()
     except Exception as e:
-        return False, str(e)
+        return False, format_openai_api_error(e)
 
 
 def _check_rate_limit():
@@ -162,7 +197,7 @@ def ask_meeting_ai(
     except Exception as e:
         if _is_context_length_error(e):
             return False, "Meeting content is too long for the model. Try shortening the transcript or summary."
-        return False, str(e)
+        return False, format_openai_api_error(e)
 
 
 def generate_export_name(api_key, summary_excerpt, model=None):
@@ -197,4 +232,4 @@ def generate_export_name(api_key, summary_excerpt, model=None):
             return False, "No name returned."
         return True, content
     except Exception as e:
-        return False, str(e)
+        return False, format_openai_api_error(e)
