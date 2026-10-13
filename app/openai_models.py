@@ -12,6 +12,8 @@ FALLBACK_MODEL = "gpt-5.2"
 RECOMMENDED_COUNT = 5
 CACHE_TTL_SEC = 86400
 CUSTOM_OPTION = "Custom…"
+# Saved keys are OpenAI keys. Pin the host so OPENAI_BASE_URL cannot send them elsewhere.
+OPENAI_API_BASE = "https://api.openai.com/v1"
 
 _CHAT_BLACKLIST = (
     "embedding",
@@ -172,13 +174,29 @@ def save_cache(model_ids, fetched_at=None):
         return False
 
 
+def make_openai_client(api_key):
+    """
+    Client for the key saved in this app.
+
+    The SDK otherwise copies OPENAI_ORG_ID, OPENAI_PROJECT_ID, and OPENAI_BASE_URL
+    from the machine. The same saved key then bills a different org, project, or
+    gateway on one computer than on another.
+    """
+    from openai import OpenAI
+
+    client = OpenAI(api_key=api_key, base_url=OPENAI_API_BASE)
+    client.organization = None
+    if hasattr(client, "project"):
+        client.project = None
+    return client
+
+
 def fetch_models(api_key):
     try:
-        from openai import OpenAI
+        client = make_openai_client(api_key)
     except ImportError:
         return [], "The 'openai' package is not installed. Run: pip install openai"
     try:
-        client = OpenAI(api_key=api_key)
         model_ids = [m.id for m in client.models.list() if getattr(m, "id", None)]
         return model_ids, None
     except Exception as e:

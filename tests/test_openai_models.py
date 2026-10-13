@@ -2,6 +2,8 @@
 import json
 import time
 
+import pytest
+
 from app import openai_models
 
 
@@ -123,3 +125,21 @@ def test_resolve_model():
 def test_resolve_model_rejects_non_chat_gpt():
     settings = {"openai_model_summary": "gpt-5.2-codex"}
     assert openai_models.resolve_model(settings, "summary") == openai_models.FALLBACK_MODEL
+
+
+def test_make_openai_client_ignores_ambient_env(monkeypatch):
+    pytest.importorskip("openai")
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-from-env")
+    monkeypatch.setenv("OPENAI_ORG_ID", "org-empty-credits")
+    monkeypatch.setenv("OPENAI_PROJECT_ID", "proj-empty-credits")
+    monkeypatch.setenv("OPENAI_BASE_URL", "https://gateway.example/v1")
+
+    client = openai_models.make_openai_client("sk-saved-key")
+
+    assert client.api_key == "sk-saved-key"
+    assert client.organization is None
+    assert getattr(client, "project", None) is None
+    assert str(client.base_url).rstrip("/") == openai_models.OPENAI_API_BASE
+    headers = client.default_headers
+    assert headers.get("OpenAI-Organization") != "org-empty-credits"
+    assert headers.get("OpenAI-Project") != "proj-empty-credits"

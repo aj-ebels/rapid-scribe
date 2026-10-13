@@ -17,7 +17,6 @@ def test_format_credit_balance_from_sdk_string():
     text = format_openai_api_error(RuntimeError(_SCREENSHOT_ERROR))
     assert "credit_balance_exhausted" in text
     assert "https://platform.openai.com/settings/organization/billing/" in text
-    assert "same organization" in text
     assert "ChatGPT subscription" in text
     assert "Error code: 429" not in text
 
@@ -62,7 +61,9 @@ def test_generate_ai_summary_replaces_credit_error(monkeypatch):
         completions = _Completions()
 
     class _OpenAI:
-        def __init__(self, api_key=None):
+        def __init__(self, api_key=None, base_url=None):
+            self.api_key = api_key
+            self.base_url = base_url
             self.chat = _Chat()
 
     fake.OpenAI = _OpenAI

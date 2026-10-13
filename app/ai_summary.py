@@ -10,6 +10,7 @@ from .openai_models import (
     FALLBACK_MODEL,
     completion_kwargs,
     is_unsupported_reasoning_error,
+    make_openai_client,
     supports_reasoning_effort,
 )
 
@@ -49,14 +50,11 @@ def format_openai_api_error(exc):
         or "no credits remaining" in low
     ):
         return (
-            "OpenAI rejected this request because the organization for the saved API key "
+            "OpenAI rejected this request because the organization for this API key "
             "has no prepaid API credits left (credit_balance_exhausted). The selected model "
             "is not the problem, and a ChatGPT subscription does not refill this balance.\n\n"
-            "A new API key from this same organization will fail the same way. "
             "Add credits, then try again:\n"
-            "https://platform.openai.com/settings/organization/billing/\n\n"
-            "If that page already shows a balance, this key belongs to a different organization "
-            "or project. Create a key there and save it in Settings."
+            "https://platform.openai.com/settings/organization/billing/"
         )
     return raw or "OpenAI request failed."
 
@@ -99,11 +97,10 @@ def generate_ai_summary(api_key, prompt_template, transcript, manual_notes="", m
     text = _PLACEHOLDER_TRANSCRIPT.sub(lambda m: transcript, prompt_template)
     text = _PLACEHOLDER_MANUAL_NOTES.sub(lambda m: manual_notes or "", text)
     try:
-        from openai import OpenAI
+        client = make_openai_client(api_key)
     except ImportError:
         return False, "The 'openai' package is not installed. Run: pip install openai"
     try:
-        client = OpenAI(api_key=api_key)
         response = _create_completion(
             client,
             model,
@@ -186,11 +183,10 @@ def ask_meeting_ai(
     messages.append({"role": "user", "content": (new_user_message or "").strip()})
 
     try:
-        from openai import OpenAI
+        client = make_openai_client(api_key)
     except ImportError:
         return False, "The 'openai' package is not installed. Run: pip install openai"
     try:
-        client = OpenAI(api_key=api_key)
         response = _create_completion(client, model, messages)
         content = response.choices[0].message.content
         return True, (content or "").strip()
@@ -217,11 +213,10 @@ def generate_export_name(api_key, summary_excerpt, model=None):
         "Generate a very concise (a few words maximum) file name (no extension) for this meeting summary. Examples: \"ABC Industries call\", \"conference debrief meeting\", \"product launch meeting\". Reply with only the suggested name, nothing else.\n\nSummary excerpt:\n" + excerpt[:250]
     )
     try:
-        from openai import OpenAI
+        client = make_openai_client(api_key)
     except ImportError:
         return False, "The 'openai' package is not installed. Run: pip install openai"
     try:
-        client = OpenAI(api_key=api_key)
         response = _create_completion(
             client,
             model,
