@@ -43,9 +43,9 @@
     true,
     false
   ],
-  "openai_model_summary": "gpt-5.6-terra",
-  "openai_model_ask": "gpt-5.6-terra",
-  "openai_model_export": "gpt-5.6-terra",
+  "openai_model_summary": "gpt-6.1-sol",
+  "openai_model_ask": "gpt-6.1-sol",
+  "openai_model_export": "gpt-6.1-sol",
   "openai_model_summary_explicit": false,
   "openai_model_ask_explicit": false,
   "openai_model_export_explicit": false
