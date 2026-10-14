@@ -50,6 +50,7 @@ from .capture import (
     SAMPLE_RATE,
 )
 from .ai_summary import generate_ai_summary, generate_export_name, ask_meeting_ai
+from .export_markdown import build_clipboard_markdown, build_export_body
 from .api_key_storage import get_openai_api_key, set_openai_api_key, clear_openai_api_key
 from .openai_models import (
     CUSTOM_OPTION,
@@ -1506,20 +1507,54 @@ def main(splash_window=None):
         path = filedialog.asksaveasfilename(parent=root, defaultextension=".md", filetypes=[("Markdown", "*.md"), ("All files", "*.*")], initialfile=default_name)
         if not path:
             return
-        # Order: AI Summary → Manual Notes → Full Transcript
-        parts = []
-        if summary:
-            parts.append("# AI Summary\n\n" + summary)
-        if manual_notes:
-            parts.append("# Manual Notes\n\n" + manual_notes)
-        if transcript:
-            parts.append("# Full Transcript\n\n" + transcript)
-        content = "\n\n---\n\n".join(parts) + "\n"
+        content = build_export_body(summary=summary, manual_notes=manual_notes, transcript=transcript)
         try:
             with open(path, "w", encoding="utf-8") as f:
                 f.write(content)
         except Exception as e:
             messagebox.showerror("Export failed", str(e), parent=root)
+
+    def _copy_export_to_clipboard():
+        summary = app.summary_text.get("1.0", "end").strip()
+        transcript = app.log.get("1.0", "end").strip()
+        manual_notes = app.manual_notes.get("1.0", "end").strip()
+        if not summary and not transcript and not manual_notes:
+            messagebox.showwarning(
+                "Nothing to copy",
+                "Add an AI summary, transcript, and/or manual notes first.",
+                parent=root,
+            )
+            return
+        export_meeting = get_meeting_by_id(app.meetings, app.current_meeting_id) if app.current_meeting_id else None
+        meeting_date = _normalize_meeting_date(
+            app.meeting_date_var.get(),
+            fallback=(export_meeting or {}).get("created_at"),
+        )
+        text = build_clipboard_markdown(
+            meeting_name=app.meeting_name_var.get(),
+            meeting_date=meeting_date,
+            prepend_date=bool(app.export_prepend_meeting_date_var.get()),
+            summary=summary,
+            manual_notes=manual_notes,
+            transcript=transcript,
+        )
+        try:
+            root.clipboard_clear()
+            root.clipboard_append(text)
+            root.update()
+        except Exception as e:
+            messagebox.showerror("Copy failed", str(e), parent=root)
+            return
+        copy_btn.configure(text="Copied")
+        pending = getattr(app, "_copy_export_reset_after", None)
+        if pending is not None:
+            root.after_cancel(pending)
+
+        def _restore_copy_label():
+            copy_btn.configure(text="Copy to Clipboard")
+            app._copy_export_reset_after = None
+
+        app._copy_export_reset_after = root.after(1200, _restore_copy_label)
 
     app.summary_text = ctk.CTkTextbox(card, wrap="word", font=ctk.CTkFont(family=MONO_FONT_FAMILY, size=F.body), corner_radius=8, border_width=0, fg_color=COLORS["textbox_bg"], border_spacing=UI_PAD)
     app.summary_text.grid(row=2, column=2, sticky="nsew", padx=(UI_PAD, UI_PAD), pady=(0, UI_PAD))
@@ -1862,6 +1897,18 @@ def main(splash_window=None):
         border_width=1, corner_radius=3, checkbox_width=18, checkbox_height=18
     ).pack(side="left", padx=8, pady=4)
     ctk.CTkButton(export_row, text="Export", font=ctk.CTkFont(family=UI_FONT_FAMILY, size=F.small), width=64, height=28, corner_radius=UI_RADIUS, fg_color=COLORS["secondary_fg"], hover_color=COLORS["secondary_hover"], command=_export_markdown).pack(side="left", padx=(0, 0), pady=4)
+    copy_btn = ctk.CTkButton(
+        export_row,
+        text="Copy to Clipboard",
+        font=ctk.CTkFont(family=UI_FONT_FAMILY, size=F.small),
+        width=148,
+        height=28,
+        corner_radius=UI_RADIUS,
+        fg_color=COLORS["secondary_fg"],
+        hover_color=COLORS["secondary_hover"],
+        command=_copy_export_to_clipboard,
+    )
+    copy_btn.pack(side="left", padx=(8, 0), pady=4)
 
     # ----- Meeting instances: sync UI <-> current meeting, debounced save, sidebar list -----
     app._loading_meeting = False
