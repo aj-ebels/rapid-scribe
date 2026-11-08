@@ -1,12 +1,7 @@
 """Unit tests for discreet (incognito) capture-chrome helpers."""
-from pathlib import Path
-
-import pytest
-
 from app.discreet_mode import (
     is_discreet,
     pulse_allowed,
-    recolor_icon_calm,
     status_for_capture_state,
     STATUS_DISCREET_CAPTURING,
     STATUS_DISCREET_READY,
@@ -41,29 +36,3 @@ def test_load_settings_includes_discreet_mode_default(tmp_path, monkeypatch):
     monkeypatch.setattr("app.settings.SETTINGS_FILE", tmp_path / "settings.json")
     s = load_settings()
     assert s.get("discreet_mode") is False
-
-
-def test_recolor_icon_calm_changes_pixels():
-    pytest.importorskip("PIL")
-    from PIL import Image
-
-    # Solid red opaque pixel should change under calm recolor
-    img = Image.new("RGBA", (4, 4), (220, 30, 30, 255))
-    out = recolor_icon_calm(img)
-    assert out.size == img.size
-    assert out.getpixel((1, 1)) != img.getpixel((1, 1))
-    # Alpha preserved
-    assert out.getpixel((1, 1))[3] == 255
-
-
-def test_recolor_icon_from_assets_if_present():
-    pytest.importorskip("PIL")
-    from PIL import Image
-
-    root = Path(__file__).resolve().parents[1]
-    path = root / "assets" / "icons" / "record.png"
-    if not path.exists():
-        pytest.skip("record.png not present")
-    img = Image.open(path).convert("RGBA")
-    out = recolor_icon_calm(img)
-    assert out.size == img.size

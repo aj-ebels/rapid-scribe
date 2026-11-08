@@ -59,7 +59,7 @@ This plan covers **discreet capture chrome** only. The broader discreet-meeting 
 **Capture chrome while mode is on**
 
 - R3. The transcript/log does not show the red pulsing recording border while discreet mode is on, whether idle or capturing.
-- R4. The start/stop control does not use red / danger “recorder” styling while discreet mode is on; idle and active/stop states remain visually distinct via a calm treatment.
+- R4. While discreet mode is on, the capture control is plain text **Start** / **Stop** (no mic/record icon) with calm non-danger styling; idle and active remain distinct.
 - R5. While capturing with discreet mode on, status text must not advertise recording in plain language (no “Recording…” / “Recording & transcribing…” style strings); prefer bland copy such as “On” or elapsed-time-only if a status line remains.
 - R6. Window title, taskbar/dock label, and app icon stay the normal Rapid Scribe identity regardless of mode.
 
@@ -131,14 +131,13 @@ None blocking. Label, calm styling, and bland status strings are resolved in Pla
 - **KTD1. Setting key `discreet_mode`** (bool, default `false`) in `settings.json` via existing `load_settings` / `save_settings`. Settings UI label: **Incognito mode** with helper text that chrome is quieter while capture still works. Governs R1.
 - **KTD2. Central `apply_discreet_chrome(app)`** — one function (and Settings toggle command) that refreshes pulse, start/stop presentation, and status tone from `app.settings["discreet_mode"]` and `app.running`. Call on toggle, after start, after stop, and once at UI build after the start button exists. Governs R2–R5, R7.
 - **KTD3. Pulse gate** — `_tick_transcript_pulse` / `_start_transcript_pulse` no-op (and clear border) when discreet mode is on. Summary blue pulse unchanged (not a recorder cue). Governs R3.
-- **KTD4. Calm start/stop** — Image path: build alternate `CTkImage`s by desaturating/recoloring `record.png` / `stop recording.png` with Pillow toward a calm blue-gray (not red); swap `_record_ctk` / `_stop_ctk` presentation via those images when discreet. Text fallback path: Start uses `primary_fg`; Stop uses `primary_fg` (not `danger_fg`) when discreet. Governs R4.
+- **KTD4. Text Start/Stop in Incognito** — While discreet, the capture control is plain text **Start** / **Stop** (primary blue, not danger red) with no mic/record icon. Mode off restores the normal icon button (or dual Start/Stop with red Stop). Governs R4.
 - **KTD5. Bland status while capturing** — When discreet and `running`: status is `"On"`. Idle discreet ready: `"Ready"`. Stopping can stay `"Stopping…"` / `"Stopped"`. Model-missing strings stay explicit. Mode off keeps current recording-advertising strings. Governs R5.
 - **KTD6. No window/title changes** — Do not touch `root.title` or icon APIs for this feature. Governs R6.
-- **KTD7. Unit-test helpers, not GUI** — Pure helpers for “is discreet?”, status string selection, and optional image recolor can live in a small module or testable functions; no Tk GUI tests (matches existing suite).
+- **KTD7. Unit-test helpers, not GUI** — Pure helpers for “is discreet?”, pulse gate, and status string selection live in a small module; no Tk GUI tests (matches existing suite).
 
 ### Assumptions
 
-- Existing Pillow usage for record/stop icons remains available in the runtime (already used in `gui.py`).
 - Blue summary-generation pulse is acceptable while discreet mode is on.
 
 ### Sequencing

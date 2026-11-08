@@ -27,7 +27,6 @@ from .discreet_mode import (
     is_discreet,
     pulse_allowed,
     status_for_capture_state,
-    recolor_icon_calm,
 )
 from . import dev_config as _dev_cfg
 from .audio_leveler import AudioLevelerConfig
@@ -407,12 +406,11 @@ def start_stop(app):
         if getattr(app, "stop_btn", None) is not None:
             app.start_btn.configure(state="disabled")
             app.stop_btn.configure(state="disabled")
-        elif getattr(app, "_record_ctk", None) is not None:
-            app.start_btn.configure(image=app._record_ctk)
         _clear = getattr(app, "_clear_transcript_pulse", None)
         if _clear is not None:
             _clear(app)
         app.status_var.set("Stopping...")
+        _safe_apply_discreet_chrome(app)
 
         should_auto_summary = bool(
             getattr(app, "auto_generate_summary_when_stopping_var", None)
@@ -448,9 +446,8 @@ def start_stop(app):
                 if getattr(app, "stop_btn", None) is not None:
                     app.start_btn.configure(state="normal")
                     app.stop_btn.configure(state="disabled")
-                elif getattr(app, "_record_ctk", None) is not None:
-                    app.start_btn.configure(image=app._record_ctk)
                 app.status_var.set("Stopped")
+                _safe_apply_discreet_chrome(app)
                 if should_auto_summary:
                     app.root.after(200, app._do_ai_summary)
 
@@ -1141,27 +1138,15 @@ def main(splash_window=None):
     app.stop_btn = None
     app._record_ctk = None
     app._stop_ctk = None
-    app._record_ctk_normal = None
-    app._stop_ctk_normal = None
-    app._record_ctk_discreet = None
-    app._stop_ctk_discreet = None
+    app._icon_btn_size = None
+    app._uses_icon_capture_btn = False
     if _use_image_buttons:
         _btn_w = max(_disp_rw, _disp_sw)
         _btn_h = max(_disp_rh, _disp_sh)
         try:
-            app._record_ctk_normal = ctk.CTkImage(light_image=_record_img, dark_image=_record_img, size=(_btn_w, _btn_h))
-            app._stop_ctk_normal = ctk.CTkImage(light_image=_stop_img, dark_image=_stop_img, size=(_btn_w, _btn_h))
-            try:
-                _rec_d = recolor_icon_calm(_record_img)
-                _stop_d = recolor_icon_calm(_stop_img)
-                app._record_ctk_discreet = ctk.CTkImage(light_image=_rec_d, dark_image=_rec_d, size=(_btn_w, _btn_h))
-                app._stop_ctk_discreet = ctk.CTkImage(light_image=_stop_d, dark_image=_stop_d, size=(_btn_w, _btn_h))
-            except Exception as e_recolor:
-                diag("discreet_icon_recolor_failed", error=str(e_recolor))
-                app._record_ctk_discreet = app._record_ctk_normal
-                app._stop_ctk_discreet = app._stop_ctk_normal
-            app._record_ctk = app._record_ctk_normal
-            app._stop_ctk = app._stop_ctk_normal
+            app._record_ctk = ctk.CTkImage(light_image=_record_img, dark_image=_record_img, size=(_btn_w, _btn_h))
+            app._stop_ctk = ctk.CTkImage(light_image=_stop_img, dark_image=_stop_img, size=(_btn_w, _btn_h))
+            app._icon_btn_size = (_btn_w, _btn_h)
             app.start_btn = ctk.CTkButton(
                 btn_frame,
                 image=app._record_ctk,
@@ -1174,12 +1159,14 @@ def main(splash_window=None):
                 state="disabled",
             )
             app.start_btn.pack(side="left")
+            app._uses_icon_capture_btn = True
         except Exception as e:
             # Pillow ImageTk / _imagingtk can fail on some Windows + Python builds (e.g. WinError 299, TclError).
             diag("record_stop_icons_fallback", error=str(e))
             app._record_ctk = None
             app._stop_ctk = None
             app.start_btn = None
+            app._uses_icon_capture_btn = False
     if app.start_btn is None:
         app.start_btn = ctk.CTkButton(btn_frame, text="Start", command=lambda: start_stop(app), font=ctk.CTkFont(family=UI_FONT_FAMILY, size=F.header, weight="bold"), width=100, height=36, corner_radius=UI_RADIUS, fg_color=COLORS["primary_fg"], hover_color=COLORS["primary_hover"], state="disabled")
         app.start_btn.pack(side="left", padx=(0, UI_PAD))
@@ -1194,17 +1181,34 @@ def main(splash_window=None):
             _clear_transcript_pulse(app)
         elif running and getattr(app, "_transcript_pulse_id", None) is None:
             _start_transcript_pulse(app)
-        # Image start/stop
-        if getattr(app, "_record_ctk_normal", None) is not None and getattr(app, "start_btn", None) is not None and getattr(app, "stop_btn", None) is None:
-            rec = app._record_ctk_discreet if discreet else app._record_ctk_normal
-            stop = app._stop_ctk_discreet if discreet else app._stop_ctk_normal
-            app._record_ctk = rec
-            app._stop_ctk = stop
+        # Single icon button: Incognito uses plain Start/Stop text (no mic/record glyph).
+        if getattr(app, "_uses_icon_capture_btn", False) and getattr(app, "start_btn", None) is not None and getattr(app, "stop_btn", None) is None:
             try:
-                app.start_btn.configure(image=stop if running else rec)
+                if discreet:
+                    app.start_btn.configure(
+                        image=None,
+                        text="Stop" if running else "Start",
+                        width=100,
+                        height=36,
+                        font=ctk.CTkFont(family=UI_FONT_FAMILY, size=F.header, weight="bold"),
+                        fg_color=COLORS["primary_fg"],
+                        hover_color=COLORS["primary_hover"],
+                        corner_radius=UI_RADIUS,
+                    )
+                else:
+                    iw, ih = getattr(app, "_icon_btn_size", (36, 36))
+                    icon = app._stop_ctk if running else app._record_ctk
+                    app.start_btn.configure(
+                        image=icon,
+                        text="",
+                        width=iw,
+                        height=ih,
+                        fg_color="transparent",
+                        hover_color=("gray85", "gray25"),
+                    )
             except Exception:
                 pass
-        # Text Start/Stop fallback
+        # Dual text Start/Stop buttons: keep labels; quiet Stop color in Incognito.
         if getattr(app, "stop_btn", None) is not None:
             try:
                 if discreet:
