@@ -23,6 +23,12 @@ except ImportError:
 
 from . import __version__ as app_version
 from .settings import load_settings, save_settings, AUDIO_MODE_DEFAULT, AUDIO_MODE_LOOPBACK, AUDIO_MODE_MEETING
+from .discreet_mode import (
+    is_discreet,
+    pulse_allowed,
+    status_for_capture_state,
+    recolor_icon_calm,
+)
 from . import dev_config as _dev_cfg
 from .audio_leveler import AudioLevelerConfig
 from .devices import list_audio_devices, list_loopback_devices, get_default_monitor_device, get_effective_audio_device
@@ -354,10 +360,23 @@ def update_model_status(app, models_err=None):
     if getattr(app, "status_var", None) is not None:
         if not installed:
             app.status_var.set("Install the transcription model first (Model tab → Download & install)")
-        else:
-            app.status_var.set("Ready to record & transcribe")
+        elif not getattr(app, "running", False):
+            app.status_var.set(
+                status_for_capture_state(
+                    getattr(app, "settings", None),
+                    running=False,
+                    mode_off_capturing="Recording & transcribing…",
+                    mode_off_ready="Ready to record & transcribe",
+                )
+            )
     if getattr(app, "start_btn", None) is not None:
         app.start_btn.configure(state="normal" if ready else "disabled")
+    apply = getattr(app, "apply_discreet_chrome", None)
+    if callable(apply) and not getattr(app, "running", False):
+        try:
+            apply()
+        except Exception:
+            pass
 
 
 def start_stop(app):
@@ -467,7 +486,7 @@ def start_stop(app):
             daemon=True,
         )
         app.capture_threads = [app.capture_thread]
-        app.status_var.set("Recording & transcribing…")
+        app._capturing_status_loud = "Recording & transcribing…"
         app.level_thread = threading.Thread(
             target=_level_monitor_worker,
             args=(dev_idx, app.level_queue, app.stop_event),
@@ -481,7 +500,7 @@ def start_stop(app):
             daemon=True,
         )
         app.capture_threads = [app.capture_thread]
-        app.status_var.set("Recording loopback & transcribing…")
+        app._capturing_status_loud = "Recording loopback & transcribing…"
     elif mode == AUDIO_MODE_MEETING:
         try:
             use_silence = _dev_cfg.CHUNKING_MODE == "vad"
@@ -528,7 +547,7 @@ def start_stop(app):
             app.mixer.set_stereo_callback(app.recorder.push_stereo)
             app.capture_thread = None
             app.capture_threads = []
-            app.status_var.set("Meeting (mic + loopback) — recording…")
+            app._capturing_status_loud = "Meeting (mic + loopback) — recording…"
             diag("meeting_started", mixer_ok=True)
         except Exception as e:
             diag("meeting_start_failed", error=str(e))
@@ -559,6 +578,16 @@ def start_stop(app):
         )
     queue_transcription_gate_reset(app.chunk_queue)
     app.running = True
+    loud = getattr(app, "_capturing_status_loud", "Recording & transcribing…")
+    if getattr(app, "status_var", None) is not None:
+        app.status_var.set(
+            status_for_capture_state(
+                getattr(app, "settings", None),
+                running=True,
+                mode_off_capturing=loud,
+                mode_off_ready="Ready to record & transcribe",
+            )
+        )
     _start = getattr(app, "_start_transcript_pulse", None)
     if _start is not None:
         _start(app)
@@ -567,6 +596,12 @@ def start_stop(app):
         app.stop_btn.configure(state="normal")
     elif getattr(app, "_stop_ctk", None) is not None:
         app.start_btn.configure(image=app._stop_ctk)
+    apply = getattr(app, "apply_discreet_chrome", None)
+    if callable(apply):
+        try:
+            apply()
+        except Exception:
+            pass
     poll_text_queue(app)
 
 
@@ -776,7 +811,7 @@ def main(splash_window=None):
 
     def _tick_transcript_pulse(app):
         app._transcript_pulse_id = None
-        if not getattr(app, "running", False):
+        if not getattr(app, "running", False) or not pulse_allowed(getattr(app, "settings", None)):
             _clear_transcript_pulse(app)
             return
         phase = getattr(app, "_transcript_pulse_phase", 0.0)
@@ -788,6 +823,9 @@ def main(splash_window=None):
         app._transcript_pulse_id = app.root.after(PULSE_TICK_MS, lambda: _tick_transcript_pulse(app))
 
     def _start_transcript_pulse(app):
+        if not pulse_allowed(getattr(app, "settings", None)):
+            _clear_transcript_pulse(app)
+            return
         app._transcript_pulse_phase = 0.0
         _tick_transcript_pulse(app)
 
@@ -1094,12 +1132,27 @@ def main(splash_window=None):
     app.stop_btn = None
     app._record_ctk = None
     app._stop_ctk = None
+    app._record_ctk_normal = None
+    app._stop_ctk_normal = None
+    app._record_ctk_discreet = None
+    app._stop_ctk_discreet = None
     if _use_image_buttons:
         _btn_w = max(_disp_rw, _disp_sw)
         _btn_h = max(_disp_rh, _disp_sh)
         try:
-            app._record_ctk = ctk.CTkImage(light_image=_record_img, dark_image=_record_img, size=(_btn_w, _btn_h))
-            app._stop_ctk = ctk.CTkImage(light_image=_stop_img, dark_image=_stop_img, size=(_btn_w, _btn_h))
+            app._record_ctk_normal = ctk.CTkImage(light_image=_record_img, dark_image=_record_img, size=(_btn_w, _btn_h))
+            app._stop_ctk_normal = ctk.CTkImage(light_image=_stop_img, dark_image=_stop_img, size=(_btn_w, _btn_h))
+            try:
+                _rec_d = recolor_icon_calm(_record_img)
+                _stop_d = recolor_icon_calm(_stop_img)
+                app._record_ctk_discreet = ctk.CTkImage(light_image=_rec_d, dark_image=_rec_d, size=(_btn_w, _btn_h))
+                app._stop_ctk_discreet = ctk.CTkImage(light_image=_stop_d, dark_image=_stop_d, size=(_btn_w, _btn_h))
+            except Exception as e_recolor:
+                diag("discreet_icon_recolor_failed", error=str(e_recolor))
+                app._record_ctk_discreet = app._record_ctk_normal
+                app._stop_ctk_discreet = app._stop_ctk_normal
+            app._record_ctk = app._record_ctk_normal
+            app._stop_ctk = app._stop_ctk_normal
             app.start_btn = ctk.CTkButton(
                 btn_frame,
                 image=app._record_ctk,
@@ -1123,6 +1176,61 @@ def main(splash_window=None):
         app.start_btn.pack(side="left", padx=(0, UI_PAD))
         app.stop_btn = ctk.CTkButton(btn_frame, text="Stop", command=lambda: start_stop(app), state="disabled", font=ctk.CTkFont(family=UI_FONT_FAMILY, size=F.header, weight="bold"), width=100, height=36, corner_radius=UI_RADIUS, fg_color=COLORS["danger_fg"], hover_color=COLORS["danger_hover"])
         app.stop_btn.pack(side="left")
+
+    def apply_discreet_chrome():
+        """Refresh pulse, start/stop presentation, and capturing status from discreet_mode."""
+        discreet = is_discreet(getattr(app, "settings", None))
+        running = bool(getattr(app, "running", False))
+        if discreet:
+            _clear_transcript_pulse(app)
+        elif running:
+            _start_transcript_pulse(app)
+        # Image start/stop
+        if getattr(app, "_record_ctk_normal", None) is not None and getattr(app, "start_btn", None) is not None and getattr(app, "stop_btn", None) is None:
+            rec = app._record_ctk_discreet if discreet else app._record_ctk_normal
+            stop = app._stop_ctk_discreet if discreet else app._stop_ctk_normal
+            app._record_ctk = rec
+            app._stop_ctk = stop
+            try:
+                app.start_btn.configure(image=stop if running else rec)
+            except Exception:
+                pass
+        # Text Start/Stop fallback
+        if getattr(app, "stop_btn", None) is not None:
+            try:
+                if discreet:
+                    app.stop_btn.configure(fg_color=COLORS["primary_fg"], hover_color=COLORS["primary_hover"])
+                else:
+                    app.stop_btn.configure(fg_color=COLORS["danger_fg"], hover_color=COLORS["danger_hover"])
+            except Exception:
+                pass
+        if running and getattr(app, "status_var", None) is not None:
+            loud = getattr(app, "_capturing_status_loud", "Recording & transcribing…")
+            cur = app.status_var.get()
+            # Don't override Stopping… / install prompts
+            if cur not in ("Stopping...", "Stopped") and "Install the transcription model" not in cur:
+                app.status_var.set(
+                    status_for_capture_state(
+                        app.settings,
+                        running=True,
+                        mode_off_capturing=loud,
+                        mode_off_ready="Ready to record & transcribe",
+                    )
+                )
+        elif not running and getattr(app, "status_var", None) is not None:
+            cur = app.status_var.get()
+            if cur in ("Ready to record & transcribe", "Ready", "Stopped") or cur.startswith("Ready"):
+                app.status_var.set(
+                    status_for_capture_state(
+                        app.settings,
+                        running=False,
+                        mode_off_capturing="Recording & transcribing…",
+                        mode_off_ready="Ready to record & transcribe",
+                    )
+                )
+
+    app.apply_discreet_chrome = apply_discreet_chrome
+    apply_discreet_chrome()
 
     tabview = ctk.CTkTabview(main_content, fg_color=COLORS["card"], corner_radius=UI_RADIUS)
     tabview.pack(fill="both", expand=True, pady=(0, UI_PAD))
@@ -2212,6 +2320,34 @@ def main(splash_window=None):
         messagebox.showinfo("Scale saved", "Restart the app for the new scale to take effect.", parent=root)
     app.ui_scale_menu = ctk.CTkOptionMenu(settings_card, values=scale_labels, variable=app.ui_scale_var, width=220, font=ctk.CTkFont(family=UI_FONT_FAMILY, size=F.small), command=_on_ui_scale_change)
     app.ui_scale_menu.pack(anchor="w", pady=(0, UI_PAD_LG))
+
+    # Incognito / discreet capture chrome
+    ctk.CTkLabel(settings_card, text="Incognito mode", font=ctk.CTkFont(family=UI_FONT_FAMILY, size=F.header, weight="bold")).pack(anchor="w", pady=(0, 4))
+    ctk.CTkLabel(
+        settings_card,
+        text="Quieter capture chrome for shared spaces: calm start/stop control, no red recording pulse, bland status. Capture still works the same.",
+        font=ctk.CTkFont(family=UI_FONT_FAMILY, size=F.small),
+        text_color="gray",
+        wraplength=520,
+        anchor="w",
+    ).pack(anchor="w", pady=(0, 6))
+    app.discreet_mode_var = ctk.BooleanVar(value=bool(app.settings.get("discreet_mode", False)))
+
+    def _on_discreet_mode_toggle():
+        app.settings["discreet_mode"] = bool(app.discreet_mode_var.get())
+        save_settings(app.settings)
+        apply = getattr(app, "apply_discreet_chrome", None)
+        if callable(apply):
+            apply()
+
+    app.discreet_mode_switch = ctk.CTkSwitch(
+        settings_card,
+        text="Use quieter capture chrome",
+        variable=app.discreet_mode_var,
+        font=ctk.CTkFont(family=UI_FONT_FAMILY, size=F.small),
+        command=_on_discreet_mode_toggle,
+    )
+    app.discreet_mode_switch.pack(anchor="w", pady=(0, UI_PAD_LG))
 
     # Auto-save delay
     ctk.CTkLabel(settings_card, text="Auto-save delay", font=ctk.CTkFont(family=UI_FONT_FAMILY, size=F.header, weight="bold")).pack(anchor="w", pady=(0, 4))

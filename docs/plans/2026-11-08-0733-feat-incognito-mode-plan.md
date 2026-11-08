@@ -5,7 +5,6 @@ type: feat
 artifact_contract: ce-unified-plan/v1
 product_contract_source: ce-brainstorm
 execution: code
-status: requirements-only
 ---
 
 # Incognito mode (discreet capture chrome)
@@ -123,8 +122,72 @@ flowchart LR
 
 ### Outstanding Questions
 
-**Deferred to Planning**
+None blocking. Label, calm styling, and bland status strings are resolved in Planning Contract KTDs.
 
-- Exact Settings label/copy for the toggle (“Incognito mode” vs “Discreet mode” vs similar)
-- Exact calm colors/icons for idle vs active/stop (within R4: non-red, distinct states)
-- Exact bland status strings when capturing vs idle (within R5)
+## Planning Contract
+
+### Key Technical Decisions
+
+- **KTD1. Setting key `discreet_mode`** (bool, default `false`) in `settings.json` via existing `load_settings` / `save_settings`. Settings UI label: **Incognito mode** with helper text that chrome is quieter while capture still works. Governs R1.
+- **KTD2. Central `apply_discreet_chrome(app)`** — one function (and Settings toggle command) that refreshes pulse, start/stop presentation, and status tone from `app.settings["discreet_mode"]` and `app.running`. Call on toggle, after start, after stop, and once at UI build after the start button exists. Governs R2–R5, R7.
+- **KTD3. Pulse gate** — `_tick_transcript_pulse` / `_start_transcript_pulse` no-op (and clear border) when discreet mode is on. Summary blue pulse unchanged (not a recorder cue). Governs R3.
+- **KTD4. Calm start/stop** — Image path: build alternate `CTkImage`s by desaturating/recoloring `record.png` / `stop recording.png` with Pillow toward a calm blue-gray (not red); swap `_record_ctk` / `_stop_ctk` presentation via those images when discreet. Text fallback path: Start uses `primary_fg`; Stop uses `primary_fg` (not `danger_fg`) when discreet. Governs R4.
+- **KTD5. Bland status while capturing** — When discreet and `running`: status is `"On"`. Idle discreet ready: `"Ready"`. Stopping can stay `"Stopping…"` / `"Stopped"`. Model-missing strings stay explicit. Mode off keeps current recording-advertising strings. Governs R5.
+- **KTD6. No window/title changes** — Do not touch `root.title` or icon APIs for this feature. Governs R6.
+- **KTD7. Unit-test helpers, not GUI** — Pure helpers for “is discreet?”, status string selection, and optional image recolor can live in a small module or testable functions; no Tk GUI tests (matches existing suite).
+
+### Assumptions
+
+- Existing Pillow usage for record/stop icons remains available in the runtime (already used in `gui.py`).
+- Blue summary-generation pulse is acceptable while discreet mode is on.
+
+### Sequencing
+
+1. Settings key + load/save defaults  
+2. Status/pulse/control apply helper  
+3. Settings switch + wire start/stop paths  
+4. Tests for helpers  
+
+## Implementation Units
+
+### U1. Persist `discreet_mode` setting
+
+**Goal:** R1 persistence  
+**Files:** `app/settings.py`  
+**Done when:** Default `false`; load/save round-trip; unknown/missing key → false.
+
+### U2. Discreet chrome helpers + apply path
+
+**Goal:** R2–R5, R7 behavior in one place  
+**Files:** Prefer small `app/discreet_mode.py` for pure helpers (status text, whether pulse allowed, icon recolor); wire from `app/gui.py`  
+**Done when:**
+- Pulse suppressed when discreet (R3)
+- Start/stop calm when discreet; danger/red path when not (R4)
+- Capturing status `"On"` / idle `"Ready"` when discreet (R5)
+- Toggle mid-session updates chrome without restart (R2)
+- Mode off unchanged (R7)
+- Title/icon untouched (R6)
+
+### U3. Settings Incognito switch
+
+**Goal:** R1 discoverability  
+**Files:** `app/gui.py` Settings tab (near Interface scale)  
+**Done when:** CTkSwitch labeled Incognito mode saves setting and calls apply immediately.
+
+### U4. Helper unit tests
+
+**Goal:** Lock KTD5/KTD3 selection logic  
+**Files:** `tests/test_discreet_mode.py`  
+**Done when:** Tests cover status string matrix (discreet×running) and pulse-allowed flag; recolor helper returns non-identical pixels vs source when source is available, or is skipped cleanly.
+
+## Verification Contract
+
+- `pytest tests/test_discreet_mode.py -q`
+- Manual (dev): Settings → Incognito on → start capture → no red pulse, calm control, status `On`; toggle off mid-capture → pulse/recorder chrome returns; window title still Rapid Scribe.
+
+## Definition of Done
+
+- U1–U4 complete  
+- Product AEs AE1–AE5 satisfied by code paths above  
+- No change to packaging identity or audio/transcription pipelines  
+- Plan KTDs match shipped behavior  
