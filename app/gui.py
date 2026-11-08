@@ -334,6 +334,15 @@ def _is_transcription_model_installed(app):
 
 
 
+def _safe_apply_discreet_chrome(app):
+    apply = getattr(app, "apply_discreet_chrome", None)
+    if callable(apply):
+        try:
+            apply()
+        except Exception:
+            pass
+
+
 def update_model_status(app, models_err=None):
     """Update status bar, Start button, and model status label. Installed = ready (model loads in transcription subprocess when you press Start).
     When models_err is (models, err) from a background check, use it to avoid calling list_installed_transcription_models() on the main thread."""
@@ -371,12 +380,8 @@ def update_model_status(app, models_err=None):
             )
     if getattr(app, "start_btn", None) is not None:
         app.start_btn.configure(state="normal" if ready else "disabled")
-    apply = getattr(app, "apply_discreet_chrome", None)
-    if callable(apply) and not getattr(app, "running", False):
-        try:
-            apply()
-        except Exception:
-            pass
+    if not getattr(app, "running", False):
+        _safe_apply_discreet_chrome(app)
 
 
 def start_stop(app):
@@ -578,31 +583,27 @@ def start_stop(app):
         )
     queue_transcription_gate_reset(app.chunk_queue)
     app.running = True
-    loud = getattr(app, "_capturing_status_loud", "Recording & transcribing…")
-    if getattr(app, "status_var", None) is not None:
-        app.status_var.set(
-            status_for_capture_state(
-                getattr(app, "settings", None),
-                running=True,
-                mode_off_capturing=loud,
-                mode_off_ready="Ready to record & transcribe",
-            )
-        )
     if getattr(app, "stop_btn", None) is not None:
         app.start_btn.configure(state="disabled")
         app.stop_btn.configure(state="normal")
-    elif getattr(app, "_stop_ctk", None) is not None:
-        app.start_btn.configure(image=app._stop_ctk)
-    apply = getattr(app, "apply_discreet_chrome", None)
-    if callable(apply):
-        try:
-            apply()
-        except Exception:
-            pass
+    if getattr(app, "apply_discreet_chrome", None) is not None:
+        _safe_apply_discreet_chrome(app)
     else:
         _start = getattr(app, "_start_transcript_pulse", None)
         if _start is not None:
             _start(app)
+        loud = getattr(app, "_capturing_status_loud", "Recording & transcribing…")
+        if getattr(app, "status_var", None) is not None:
+            app.status_var.set(
+                status_for_capture_state(
+                    getattr(app, "settings", None),
+                    running=True,
+                    mode_off_capturing=loud,
+                    mode_off_ready="Ready to record & transcribe",
+                )
+            )
+        if getattr(app, "_stop_ctk", None) is not None and getattr(app, "start_btn", None) is not None:
+            app.start_btn.configure(image=app._stop_ctk)
     poll_text_queue(app)
 
 
@@ -1191,7 +1192,7 @@ def main(splash_window=None):
         running = bool(getattr(app, "running", False))
         if discreet:
             _clear_transcript_pulse(app)
-        elif running:
+        elif running and getattr(app, "_transcript_pulse_id", None) is None:
             _start_transcript_pulse(app)
         # Image start/stop
         if getattr(app, "_record_ctk_normal", None) is not None and getattr(app, "start_btn", None) is not None and getattr(app, "stop_btn", None) is None:
@@ -2344,9 +2345,7 @@ def main(splash_window=None):
     def _on_discreet_mode_toggle():
         app.settings["discreet_mode"] = bool(app.discreet_mode_var.get())
         save_settings(app.settings)
-        apply = getattr(app, "apply_discreet_chrome", None)
-        if callable(apply):
-            apply()
+        _safe_apply_discreet_chrome(app)
 
     app.discreet_mode_switch = ctk.CTkSwitch(
         settings_card,

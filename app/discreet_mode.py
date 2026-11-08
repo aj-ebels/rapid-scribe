@@ -47,8 +47,6 @@ def recolor_icon_calm(pil_image):
     Return a new PIL RGBA image: desaturated then tinted calm blue-gray.
     Leaves alpha unchanged. Caller owns original.
     """
-    from PIL import Image
-
     img = pil_image.convert("RGBA")
     pixels = img.load()
     w, h = img.size
