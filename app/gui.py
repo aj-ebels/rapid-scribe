@@ -588,9 +588,6 @@ def start_stop(app):
                 mode_off_ready="Ready to record & transcribe",
             )
         )
-    _start = getattr(app, "_start_transcript_pulse", None)
-    if _start is not None:
-        _start(app)
     if getattr(app, "stop_btn", None) is not None:
         app.start_btn.configure(state="disabled")
         app.stop_btn.configure(state="normal")
@@ -602,6 +599,10 @@ def start_stop(app):
             apply()
         except Exception:
             pass
+    else:
+        _start = getattr(app, "_start_transcript_pulse", None)
+        if _start is not None:
+            _start(app)
     poll_text_queue(app)
 
 
@@ -826,6 +827,13 @@ def main(splash_window=None):
         if not pulse_allowed(getattr(app, "settings", None)):
             _clear_transcript_pulse(app)
             return
+        # Cancel any in-flight timer so start + apply_discreet_chrome cannot double-schedule.
+        if getattr(app, "_transcript_pulse_id", None) is not None:
+            try:
+                app.root.after_cancel(app._transcript_pulse_id)
+            except Exception:
+                pass
+            app._transcript_pulse_id = None
         app._transcript_pulse_phase = 0.0
         _tick_transcript_pulse(app)
 
