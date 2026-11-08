@@ -2331,7 +2331,6 @@ def main(splash_window=None):
     app.ui_scale_menu.pack(anchor="w", pady=(0, UI_PAD_LG))
 
     # Incognito / discreet capture chrome
-    ctk.CTkLabel(settings_card, text="Incognito mode", font=ctk.CTkFont(family=UI_FONT_FAMILY, size=F.header, weight="bold")).pack(anchor="w", pady=(0, 4))
     ctk.CTkLabel(
         settings_card,
         text="Quieter capture chrome for shared spaces: calm start/stop control, no red recording pulse, bland status. Capture still works the same.",
@@ -2349,7 +2348,7 @@ def main(splash_window=None):
 
     app.discreet_mode_switch = ctk.CTkSwitch(
         settings_card,
-        text="Use quieter capture chrome",
+        text="Incognito mode",
         variable=app.discreet_mode_var,
         font=ctk.CTkFont(family=UI_FONT_FAMILY, size=F.small),
         command=_on_discreet_mode_toggle,
