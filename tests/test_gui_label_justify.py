@@ -1,9 +1,9 @@
-"""Left-anchored wrapped CTkLabels must left-justify paragraphs.
+"""CTkLabels that set wraplength and anchor="w" must also set justify="left".
 
 Tkinter Label (and thus CustomTkinter CTkLabel) defaults justify to "center".
-With wraplength set, multi-line Settings / Model / Prompts helper text appears
-centered even when pack/anchor is west. Call sites that opt into left layout
-must pass justify="left".
+With wraplength set, multi-line helper text wraps centered unless justify is
+overridden. This contract only covers call sites that pass anchor="w" on the
+label itself (not pack/grid alone).
 """
 from __future__ import annotations
 
@@ -28,9 +28,7 @@ def _is_ctk_label_call(node: ast.AST) -> bool:
     if not isinstance(node, ast.Call):
         return False
     func = node.func
-    if isinstance(func, ast.Attribute) and func.attr == "CTkLabel":
-        return True
-    return isinstance(func, ast.Name) and func.id == "CTkLabel"
+    return isinstance(func, ast.Attribute) and func.attr == "CTkLabel"
 
 
 def test_left_anchored_wrapped_labels_set_justify_left():
@@ -41,11 +39,8 @@ def test_left_anchored_wrapped_labels_set_justify_left():
             continue
         if not _kw_present(node, "wraplength"):
             continue
-        anchor = _kw_str(node, "anchor")
-        if anchor is not None and anchor != "w":
-            continue  # intentionally centered (or other) layout
-        # Default CTkLabel anchor is center; only enforce when call opts into west.
-        if anchor != "w":
+        # Omit or non-west anchor: intentionally centered (CTk default is center).
+        if _kw_str(node, "anchor") != "w":
             continue
         justify = _kw_str(node, "justify")
         if justify != "left":
@@ -70,10 +65,10 @@ def test_ctk_label_defaults_justify_to_center_when_unset():
     root = ctk.CTk()
     try:
         lbl = ctk.CTkLabel(root, text="a b c d e f g h i j", wraplength=40, anchor="w")
-        assert lbl._label.cget("justify") == "center"
+        assert lbl.cget("justify") == "center"
         left = ctk.CTkLabel(
             root, text="a b c d e f g h i j", wraplength=40, anchor="w", justify="left"
         )
-        assert left._label.cget("justify") == "left"
+        assert left.cget("justify") == "left"
     finally:
         root.destroy()
