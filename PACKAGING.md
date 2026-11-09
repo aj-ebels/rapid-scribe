@@ -37,7 +37,7 @@ This document explains how to build **Rapid Scribe** into a distributable execut
 
    Then in the app: open the **Models** tab, ensure the default model is selected, click **Download & install**. Close the app.
 
-5. **Required for transcription in the built app:** The spec bundles the `onnx_asr` package’s `preprocessors` folder (e.g. `nemo128.onnx`) so that the frozen exe can load the model. Ensure `onnx_asr` is installed in the venv when you run `pyinstaller` (it is included via `requirements.txt`).
+5. **Required for transcription in the built app:** The spec bundles the `onnx_asr` package’s `preprocessors` folder (e.g. `nemo128.onnx` under `preprocessors/data` on onnx-asr 0.12) and the dist-info for `onnx-asr`, `onnxruntime`, `huggingface_hub`, and the other names in `app/bundle_metadata.py`. onnx-asr 0.11+ calls `importlib.metadata.version("onnx-asr")` on import; without the dist-info, Start reports `No package metadata was found for onnx-asr`. Ensure `onnx_asr` is installed in the venv when you run `pyinstaller` (it is included via `requirements.txt`).
 
 ## Build steps
 
@@ -69,9 +69,24 @@ The project includes an **Inno Setup** script so you can build a normal Windows 
 3. **Build the installer:**
    - Open `installer.iss` in Inno Setup and click **Build → Compile**, or
    - From the project root: `"C:\Program Files (x86)\Inno Setup 6\ISCC.exe" installer.iss`
-   The setup exe is created in `installer_output\` (e.g. `Rapid-Scribe-Setup-1.0.exe`).
+   The setup exe is created in `installer_output\` as `Rapid Scribe v<version>-Setup.exe` (`OutputBaseFilename` in `installer.iss`).
 
 4. **Share** the setup exe. Users double-click to install, then run the app from the Start Menu or Desktop. To uninstall: **Settings → Apps → Installed apps** → **Rapid Scribe** → **Uninstall**.
+
+### GitHub Actions
+
+`.github/workflows/windows-installer.yml` builds the same installer on `windows-latest`: Python 3.11, `requirements.txt` + `requirements-build.txt`, `pyinstaller meetings.spec`, then Inno Setup (`choco install innosetup`, `ISCC installer.iss`).
+
+It runs when:
+
+- someone uses **Actions → Windows installer → Run workflow** and enters the version (no leading `v`; it must match `app/__init__.py` and `installer.iss`), or
+- a `v*` tag is pushed. The job continues only when the tag is `v<major>.<minor>` or `v<major>.<minor>.<patch>` and that version matches `app/__init__.py` and `installer.iss`.
+
+The job renames the setup exe to `Rapid.Scribe.v<version>-Setup.exe` (dots, same pattern as the published v3.19 asset), uploads it as a workflow artifact, and attaches it to a **draft** GitHub Release for that tag. The workflow refuses to modify a release that is already published. Publishing stays manual.
+
+The build fails if the `onnx_asr` `preprocessors` folder (for example `nemo128.onnx`) is not present in the PyInstaller output. PyInstaller's `warn-*.txt` is uploaded with the run so missing modules can be checked.
+
+`workflow_dispatch` is available from the GitHub UI only after this workflow file is on the default branch. A tag push runs the workflow from the tagged commit even before that.
 
 ## In-app update check
 

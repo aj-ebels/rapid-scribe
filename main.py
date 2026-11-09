@@ -20,6 +20,10 @@ if __name__ == "__main__":
     import multiprocessing
     # Required for frozen (PyInstaller) apps on Windows so multiprocessing spawn works correctly.
     multiprocessing.freeze_support()
+    # CI runs this before any window is created. Importing onnx_asr needs dist-info.
+    if "--frozen-smoke" in sys.argv:
+        from app.frozen_smoke import main as frozen_smoke_main
+        sys.exit(frozen_smoke_main(sys.argv[1:]))
     # On Windows, spawn re-imports this module in the transcription subprocess. Only run the GUI
     # in the main process so we don't open a second window when record is pressed.
     if multiprocessing.current_process().name == "MainProcess":
