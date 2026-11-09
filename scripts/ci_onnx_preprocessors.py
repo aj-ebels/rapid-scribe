@@ -6,10 +6,15 @@ import sys
 
 
 def _onnx_files(directory: str) -> list[str]:
+    """Onnx files under onnx_asr/preprocessors, including preprocessors/data.
+
+    onnx-asr 0.12 moved nemo128.onnx into preprocessors/data. The spec copies
+    the preprocessors directory recursively, so both layouts count.
+    """
     found = []
     for dirpath, _, files in os.walk(directory):
-        normalized = dirpath.replace("\\", "/").rstrip("/")
-        if not normalized.endswith("onnx_asr/preprocessors"):
+        normalized = "/" + dirpath.replace("\\", "/").rstrip("/")
+        if not normalized.endswith("/onnx_asr/preprocessors") and "/onnx_asr/preprocessors/" not in normalized:
             continue
         for name in files:
             if name.endswith(".onnx"):
@@ -26,9 +31,12 @@ def check_installed() -> None:
     if not os.path.isdir(pre):
         sys.exit(f"missing preprocessors directory: {pre}")
     found = _onnx_files(pre)
-    print("preprocessors:", sorted(os.path.basename(path) for path in found))
-    if not found:
-        sys.exit("onnx_asr preprocessors contain no .onnx files")
+    print("preprocessors:", sorted(os.path.relpath(path, pre) for path in found))
+    if not any(os.path.basename(path) == "nemo128.onnx" for path in found):
+        listing = []
+        for dirpath, _, files in os.walk(pre):
+            listing.append(f"{dirpath}: {files}")
+        sys.exit("nemo128.onnx not found under onnx_asr/preprocessors\n" + "\n".join(listing))
 
 
 def check_dist() -> None:
@@ -39,8 +47,8 @@ def check_dist() -> None:
     print("bundled preprocessor onnx files:")
     for path in found:
         print(" ", path, os.path.getsize(path))
-    if not found:
-        sys.exit("PyInstaller output is missing onnx_asr/preprocessors/*.onnx")
+    if not any(os.path.basename(path) == "nemo128.onnx" for path in found):
+        sys.exit("PyInstaller output is missing onnx_asr/preprocessors/**/nemo128.onnx")
 
 
 def main() -> None:

@@ -21,7 +21,8 @@ prompts_src = os.path.join(SPEC_DIR, "prompts.json")
 if os.path.isfile(prompts_src):
     datas.append((prompts_src, "."))
 
-# Bundle onnx_asr preprocessors (nemo128.onnx etc.) so model load finds them when frozen
+# Bundle onnx_asr preprocessors so model load finds them when frozen.
+# The directory copy is recursive: onnx-asr 0.12+ keeps nemo128.onnx in preprocessors/data.
 try:
     import onnx_asr
     _onnx_asr_root = os.path.dirname(os.path.abspath(onnx_asr.__file__))

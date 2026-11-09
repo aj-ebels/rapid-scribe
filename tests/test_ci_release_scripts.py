@@ -74,10 +74,12 @@ def test_onnx_preprocessor_dist_walk(tmp_path, monkeypatch):
     from scripts.ci_onnx_preprocessors import _onnx_files
 
     bundled = tmp_path / "Rapid Scribe" / "_internal" / "onnx_asr" / "preprocessors"
-    bundled.mkdir(parents=True)
-    (bundled / "nemo128.onnx").write_bytes(b"ok")
+    data = bundled / "data"
+    data.mkdir(parents=True)
+    (bundled / "legacy.onnx").write_bytes(b"old")
+    (data / "nemo128.onnx").write_bytes(b"ok")
     (tmp_path / "Rapid Scribe" / "other.onnx").write_bytes(b"no")
     monkeypatch.chdir(tmp_path)
     found = _onnx_files(str(tmp_path / "Rapid Scribe"))
-    assert len(found) == 1
-    assert found[0].endswith("nemo128.onnx")
+    names = sorted(os.path.basename(path) for path in found)
+    assert names == ["legacy.onnx", "nemo128.onnx"]
