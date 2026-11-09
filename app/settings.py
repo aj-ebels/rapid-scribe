@@ -62,6 +62,7 @@ def load_settings(default_model=None):
         "auto_generate_summary_when_stopping": False,
         "auto_save_delay_seconds": 1,
         "ui_scale": None,  # None = auto (DPI-based); else float 0.5–2.0 for manual scale
+        "discreet_mode": False,  # quieter capture chrome (incognito)
         "transcript_columns_visible": [True, True, True, True],  # [Notes, Transcript, Summary, Ask AI]
         "openai_model_summary": FALLBACK_MODEL,
         "openai_model_ask": FALLBACK_MODEL,
@@ -119,6 +120,8 @@ def load_settings(default_model=None):
                     out["ui_scale"] = None
                 elif isinstance(v, (int, float)):
                     out["ui_scale"] = max(0.5, min(2.0, float(v)))
+            if "discreet_mode" in data:
+                out["discreet_mode"] = bool(data["discreet_mode"])
             if "transcript_columns_visible" in data and isinstance(data["transcript_columns_visible"], list) and len(data["transcript_columns_visible"]) >= 4:
                 out["transcript_columns_visible"] = [bool(data["transcript_columns_visible"][i]) for i in range(4)]
             for key in ("openai_model_summary", "openai_model_ask", "openai_model_export"):
