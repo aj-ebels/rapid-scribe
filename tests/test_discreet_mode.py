@@ -28,9 +28,6 @@ def test_volume_meter_hidden_while_incognito_and_shown_when_off():
     assert volume_meter_visible({}) is True
     assert volume_meter_visible({"discreet_mode": False}) is True
     assert volume_meter_visible({"discreet_mode": True}) is False
-    # Toggling during a session flips visibility immediately.
-    assert volume_meter_visible({"discreet_mode": True}) is False
-    assert volume_meter_visible({"discreet_mode": False}) is True
 
 
 def test_status_matrix():

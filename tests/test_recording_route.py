@@ -50,7 +50,6 @@ def test_transcript_and_pulse_stay_with_the_recording_meeting_across_switches():
     assert must_flush_widget_before_leave(recording_meeting_id=recording, leaving_meeting_id="A")
 
     tail_on_b = tail_after_show(
-        shown_meeting_id="B",
         recording_meeting_id=recording,
         shown_transcript=widget_b,
         recording_tail=on_a.tail,
@@ -75,7 +74,6 @@ def test_transcript_and_pulse_stay_with_the_recording_meeting_across_switches():
     assert away.recording_transcript == "Hello from A. More A. Still A."
 
     tail_back = tail_after_show(
-        shown_meeting_id="A",
         recording_meeting_id=recording,
         shown_transcript=away.recording_transcript,
         recording_tail=away.tail,

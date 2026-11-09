@@ -24,7 +24,7 @@ def pulse_allowed(settings: Optional[dict]) -> bool:
 
 def volume_meter_visible(settings: Optional[dict]) -> bool:
     """Live input level is shown only when incognito is off."""
-    return not is_discreet(settings)
+    return pulse_allowed(settings)
 
 
 def should_refresh_idle_status(current: Optional[str]) -> bool:

@@ -84,7 +84,7 @@ def route_transcript_segment(
         paragraph_gap_sec=paragraph_gap_sec,
     )
     if destination == DEST_DROP or not combined:
-        kept_tail = tail or "" if destination == DEST_DROP else (new_tail or "")
+        kept_tail = (tail or "") if destination == DEST_DROP else (new_tail or "")
         return RoutedSegment(destination, "", kept_tail, stored, widget)
     if destination == DEST_STORE:
         return RoutedSegment(
@@ -114,7 +114,6 @@ def pulse_on_shown_transcript(
 
 def tail_after_show(
     *,
-    shown_meeting_id: Optional[str],
     recording_meeting_id: Optional[str],
     shown_transcript: str,
     recording_tail: str,
@@ -157,7 +156,10 @@ def deletion_stops_recording(
     deleted_meeting_id: Optional[str],
 ) -> bool:
     """Deleting the meeting that is recording stops capture so later text is not reused."""
-    return bool(recording_meeting_id) and recording_meeting_id == deleted_meeting_id
+    return must_flush_widget_before_leave(
+        recording_meeting_id=recording_meeting_id,
+        leaving_meeting_id=deleted_meeting_id,
+    )
 
 
 def action_transcript(
