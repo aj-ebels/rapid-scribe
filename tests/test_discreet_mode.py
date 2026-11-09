@@ -4,6 +4,7 @@ from app.discreet_mode import (
     pulse_allowed,
     should_refresh_idle_status,
     status_for_capture_state,
+    volume_meter_visible,
     STATUS_DISCREET_CAPTURING,
     STATUS_DISCREET_READY,
 )
@@ -22,6 +23,16 @@ def test_pulse_allowed_inverse_of_discreet():
     assert pulse_allowed({"discreet_mode": True}) is False
 
 
+def test_volume_meter_hidden_while_incognito_and_shown_when_off():
+    assert volume_meter_visible(None) is True
+    assert volume_meter_visible({}) is True
+    assert volume_meter_visible({"discreet_mode": False}) is True
+    assert volume_meter_visible({"discreet_mode": True}) is False
+    # Toggling during a session flips visibility immediately.
+    assert volume_meter_visible({"discreet_mode": True}) is False
+    assert volume_meter_visible({"discreet_mode": False}) is True
+
+
 def test_status_matrix():
     loud_cap = "Recording & transcribing…"
     loud_ready = "Ready to record & transcribe"
@@ -31,6 +42,8 @@ def test_status_matrix():
     assert status_for_capture_state(off, running=False, mode_off_capturing=loud_cap, mode_off_ready=loud_ready) == loud_ready
     assert status_for_capture_state(on, running=True, mode_off_capturing=loud_cap, mode_off_ready=loud_ready) == STATUS_DISCREET_CAPTURING
     assert status_for_capture_state(on, running=False, mode_off_capturing=loud_cap, mode_off_ready=loud_ready) == STATUS_DISCREET_READY
+    named = "Recording & transcribing… (Standup)"
+    assert status_for_capture_state(on, running=True, mode_off_capturing=named, mode_off_ready=loud_ready) == STATUS_DISCREET_CAPTURING
 
 
 def test_idle_status_keeps_stopped_and_refreshes_ready_copy():

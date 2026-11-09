@@ -28,6 +28,20 @@ from .discreet_mode import (
     pulse_allowed,
     should_refresh_idle_status,
     status_for_capture_state,
+    volume_meter_visible,
+)
+from .recording_route import (
+    DEST_DROP,
+    DEST_STORE,
+    action_transcript,
+    deletion_stops_recording,
+    named_capture_status,
+    pulse_on_shown_transcript,
+    route_transcript_segment,
+    start_recording_meeting,
+    tail_after_clear,
+    tail_after_show,
+    transcript_destination,
 )
 from . import dev_config as _dev_cfg
 from .audio_leveler import AudioLevelerConfig
@@ -85,7 +99,6 @@ from .meetings_storage import (
     append_ai_chat_message,
     clear_ai_chat_messages,
 )
-from .transcript_join import join_transcription_items
 
 if sys.platform == "win32":
     from .audio_mixer import AudioMixer
@@ -93,7 +106,6 @@ else:
     from .audio_mixer_sd import AudioMixerSD as AudioMixer
 from .chunk_recorder import ChunkRecorder
 
-_PARAGRAPH_GAP_SEC = 6.0  # silence gap (seconds between emissions) that triggers a new paragraph
 # Live transcript “roll in”: one code point per tick (ms between ticks).
 TRANSCRIPT_TYPEWRITER_MS = 10
 
@@ -147,23 +159,167 @@ def _cancel_transcript_typewriter_timer(app):
     app._transcript_typewriter_after_id = None
 
 
+def _queue_meetings_save(app):
+    """Queue a snapshot of every meeting. The background writer persists it."""
+    save_q = getattr(app, "_save_meetings_queue", None)
+    meetings = getattr(app, "meetings", None)
+    if save_q is None or meetings is None:
+        return
+    try:
+        save_q.put_nowait(copy.deepcopy(meetings))
+    except queue.Full:
+        pass
+
+
+def _publish_meetings_now(app):
+    """Write the current meeting list and drop older queued snapshots.
+
+    Stop, delete, and new-meeting all queue a snapshot and then change the
+    list again. A stale snapshot must not be the last write.
+    """
+    meetings = getattr(app, "meetings", None)
+    if meetings is None:
+        return
+    save_q = getattr(app, "_save_meetings_queue", None)
+    if save_q is not None:
+        try:
+            while True:
+                save_q.get_nowait()
+        except queue.Empty:
+            pass
+    final = copy.deepcopy(meetings)
+    save_meetings(final)
+    if save_q is not None:
+        try:
+            save_q.put_nowait(final)
+        except queue.Full:
+            pass
+
+
+def _recording_route_inputs(app):
+    rec_id = getattr(app, "recording_meeting_id", None)
+    meetings = getattr(app, "meetings", None) or []
+    meeting = get_meeting_by_id(meetings, rec_id) if rec_id else None
+    shown = getattr(app, "current_meeting_id", None)
+    widget = ""
+    log = getattr(app, "log", None)
+    if log is not None:
+        try:
+            widget = log.get("1.0", "end-1c")
+        except Exception:
+            widget = ""
+    stored = (meeting.get("transcript") if meeting else "") or ""
+    return rec_id, meeting, shown, widget, stored
+
+
+def _set_recording_transcript(app, transcript, tail):
+    """Persist transcript text onto the meeting that owns the recording."""
+    rec_id = getattr(app, "recording_meeting_id", None)
+    meeting = get_meeting_by_id(getattr(app, "meetings", None) or [], rec_id) if rec_id else None
+    if meeting is None:
+        return
+    update_meeting_fields(meeting, transcript=transcript)
+    app._transcript_tail = tail
+    try:
+        app.meetings.sort(key=lambda m: m.get("updated_at") or m.get("created_at") or "", reverse=True)
+    except Exception:
+        pass
+    _queue_meetings_save(app)
+    if getattr(app, "_loading_meeting", False):
+        return
+    refresh = getattr(app, "refresh_sidebar_meetings_list", None)
+    if callable(refresh):
+        try:
+            refresh()
+        except Exception:
+            pass
+
+
+def _route_items(app, items):
+    rec_id, meeting, shown, widget, stored = _recording_route_inputs(app)
+    return route_transcript_segment(
+        items=items,
+        tail=getattr(app, "_transcript_tail", "\n"),
+        recording_meeting_id=rec_id,
+        shown_meeting_id=shown,
+        recording_transcript=stored,
+        shown_widget_text=widget,
+        recording_meeting_exists=meeting is not None,
+    )
+
+
+def _text_for_meeting_action(app, subject_id):
+    """Transcript for summary, export, copy, or Ask AI.
+
+    Flushes the typewriter first when the box on screen is the recording,
+    so the action sees text that has arrived but not finished animating.
+    """
+    rec_id = getattr(app, "recording_meeting_id", None)
+    shown = getattr(app, "current_meeting_id", None)
+    if subject_id and subject_id == shown and rec_id == shown:
+        flush_transcript_typewriter_immediate(app)
+    meeting = get_meeting_by_id(getattr(app, "meetings", None) or [], subject_id) if subject_id else None
+    _rec, _meeting, _shown, widget, _stored = _recording_route_inputs(app)
+    stored = ((meeting or {}).get("transcript") or "") if meeting else ""
+    return action_transcript(
+        subject_meeting_id=subject_id,
+        shown_meeting_id=shown,
+        widget_text=widget,
+        stored_text=stored,
+    )
+
+
+def _emit_plain_transcript(app, text, tail):
+    """Write an already-joined string to the recording meeting (no re-join)."""
+    if not text:
+        app._transcript_tail = tail
+        return
+    rec_id, meeting, shown, _widget, stored = _recording_route_inputs(app)
+    dest = transcript_destination(
+        recording_meeting_id=rec_id,
+        shown_meeting_id=shown,
+        recording_meeting_exists=meeting is not None,
+    )
+    if dest == DEST_DROP:
+        return
+    if dest == DEST_STORE:
+        _set_recording_transcript(app, (stored or "") + text, tail)
+        return
+    log = getattr(app, "log", None)
+    if log is not None:
+        try:
+            log.insert("end", text)
+            log.see("end")
+        except Exception:
+            pass
+    app._transcript_tail = tail
+
+
+def _apply_routed_segment(app, routed, *, animate):
+    if routed.destination == DEST_DROP or not routed.combined:
+        if routed.destination != DEST_DROP:
+            app._transcript_tail = routed.tail
+        return
+    if routed.destination == DEST_STORE:
+        _set_recording_transcript(app, routed.recording_transcript, routed.tail)
+        return
+    if animate:
+        app._transcript_typewriter_buffer = routed.combined
+        app._transcript_typewriter_index = 0
+        app._transcript_typewriter_segment_tail = routed.tail
+        _tick_transcript_typewriter(app)
+        return
+    _emit_plain_transcript(app, routed.combined, routed.tail)
+
+
 def _transcript_typewriter_flush_backlog_now(app):
     """Append any pending joined backlog immediately (no animation). Updates _transcript_tail."""
     backlog = getattr(app, "_transcript_text_backlog", None)
     if not backlog:
         return
-    tail = getattr(app, "_transcript_tail", "\n")
     items = list(backlog)
     backlog.clear()
-    combined, new_tail = join_transcription_items(
-        items,
-        initial_tail=tail,
-        paragraph_gap_sec=_PARAGRAPH_GAP_SEC,
-    )
-    if combined:
-        app.log.insert("end", combined)
-        app.log.see("end")
-        app._transcript_tail = new_tail
+    _apply_routed_segment(app, _route_items(app, items), animate=False)
 
 
 def _finish_transcript_typewriter_segment(app):
@@ -196,26 +352,15 @@ def _tick_transcript_typewriter(app):
 
 
 def _process_transcript_text_backlog(app):
-    """If not currently animating, join backlog to one segment and start the typewriter."""
+    """If not currently animating, join backlog and deliver it to the recording meeting."""
     if getattr(app, "_transcript_typewriter_after_id", None) is not None:
         return
     backlog = getattr(app, "_transcript_text_backlog", None)
     if not backlog:
         return
-    tail = getattr(app, "_transcript_tail", "\n")
     items = list(backlog)
     backlog.clear()
-    combined, new_tail = join_transcription_items(
-        items,
-        initial_tail=tail,
-        paragraph_gap_sec=_PARAGRAPH_GAP_SEC,
-    )
-    if not combined:
-        return
-    app._transcript_typewriter_buffer = combined
-    app._transcript_typewriter_index = 0
-    app._transcript_typewriter_segment_tail = new_tail
-    _tick_transcript_typewriter(app)
+    _apply_routed_segment(app, _route_items(app, items), animate=True)
 
 
 def flush_transcript_typewriter_immediate(app):
@@ -223,17 +368,13 @@ def flush_transcript_typewriter_immediate(app):
     _cancel_transcript_typewriter_timer(app)
     buf = getattr(app, "_transcript_typewriter_buffer", "")
     i = getattr(app, "_transcript_typewriter_index", 0)
-    if buf and i < len(buf):
-        rest = buf[i:]
-        try:
-            app.log.insert("end", rest)
-            app.log.see("end")
-        except Exception:
-            pass
-        app._transcript_tail = getattr(app, "_transcript_typewriter_segment_tail", "\n")
+    rest = buf[i:] if buf and i < len(buf) else ""
+    segment_tail = getattr(app, "_transcript_typewriter_segment_tail", "\n")
     app._transcript_typewriter_buffer = ""
     app._transcript_typewriter_index = 0
     app._transcript_typewriter_segment_tail = "\n"
+    if rest:
+        _emit_plain_transcript(app, rest, segment_tail)
     _transcript_typewriter_flush_backlog_now(app)
 
 
@@ -247,7 +388,7 @@ def cancel_transcript_typewriter_discard_pending(app):
     app._transcript_typewriter_segment_tail = "\n"
 
 
-def poll_text_queue(app):
+def poll_text_queue(app, generation=None):
     """Called periodically from main thread to append new transcript text.
     Drains all available items then does a single insert/scroll.
 
@@ -255,7 +396,12 @@ def poll_text_queue(app):
     Error/status strings are plain str ending with \\n and are passed through as-is.
     Transcription chunks are joined intelligently: space-separated for continuous speech,
     paragraph-separated (blank line) after long pauses or at the start of a new recording.
+
+    generation matches app._poll_generation so a poll scheduled by a previous
+    Start cannot also deliver text after a new Start has begun.
     """
+    if generation != getattr(app, "_poll_generation", None):
+        return
     items = []
     try:
         while True:
@@ -288,8 +434,12 @@ def poll_text_queue(app):
             except Exception:
                 pass
     if app.running:
-        app.root.after(50, lambda: poll_text_queue(app))
+        gen = getattr(app, "_poll_generation", None)
+        app.root.after(50, lambda g=gen: poll_text_queue(app, g))
     else:
+        # Last poll of this recording. Drop the binding so a later switch
+        # cannot keep routing text at a meeting the user has stopped.
+        app.recording_meeting_id = None
         if getattr(app, "volume_bar", None) is not None:
             try:
                 app.volume_bar.set(0)
@@ -332,6 +482,23 @@ def _is_transcription_model_installed(app):
     return STANDARD_TRANSCRIPTION_MODEL in repo_ids
 
 
+
+
+def _refresh_recording_status(app):
+    """Keep the non-incognito status line on the meeting Start bound to."""
+    if not getattr(app, "running", False) or getattr(app, "_loading_meeting", False):
+        return
+    if getattr(app, "recording_meeting_id", None) != getattr(app, "current_meeting_id", None):
+        return
+    base = getattr(app, "_capturing_status_base", None)
+    if not base:
+        return
+    try:
+        name = app.meeting_name_var.get()
+    except Exception:
+        return
+    app._capturing_status_loud = named_capture_status(base, name)
+    _safe_apply_discreet_chrome(app)
 
 
 def _safe_apply_discreet_chrome(app):
@@ -391,7 +558,14 @@ def start_stop(app):
         app.running = False
         app.stop_event.set()
         app._stopping = True
+        summary_meeting_id = getattr(app, "recording_meeting_id", None) or getattr(app, "current_meeting_id", None)
         flush_transcript_typewriter_immediate(app)
+        commit = getattr(app, "commit_shown_meeting", None)
+        if callable(commit):
+            try:
+                commit()
+            except Exception:
+                pass
 
         mixer = getattr(app, "mixer", None)
         recorder = getattr(app, "recorder", None)
@@ -417,6 +591,7 @@ def start_stop(app):
             getattr(app, "auto_generate_summary_when_stopping_var", None)
             and app.auto_generate_summary_when_stopping_var.get()
             and getattr(app, "_do_ai_summary", None)
+            and summary_meeting_id
         )
 
         def _shutdown_worker():
@@ -450,7 +625,7 @@ def start_stop(app):
                 app.status_var.set("Stopped")
                 _safe_apply_discreet_chrome(app)
                 if should_auto_summary:
-                    app.root.after(200, app._do_ai_summary)
+                    app.root.after(200, lambda mid=summary_meeting_id: app._do_ai_summary(mid))
 
             app.root.after(0, _finish_stop_ui)
 
@@ -580,6 +755,15 @@ def start_stop(app):
             app.chunk_queue, app.text_queue, app.transcription_stop_event, model_id
         )
     queue_transcription_gate_reset(app.chunk_queue)
+    base_loud = getattr(app, "_capturing_status_loud", "Recording & transcribing…")
+    app._capturing_status_base = base_loud
+    app.recording_meeting_id = start_recording_meeting(getattr(app, "current_meeting_id", None))
+    try:
+        bound_name = app.meeting_name_var.get()
+    except Exception:
+        bound_name = ""
+    app._capturing_status_loud = named_capture_status(base_loud, bound_name)
+    app._poll_generation = getattr(app, "_poll_generation", 0) + 1
     app.running = True
     if getattr(app, "stop_btn", None) is not None:
         app.start_btn.configure(state="disabled")
@@ -602,7 +786,7 @@ def start_stop(app):
             )
         if getattr(app, "_stop_ctk", None) is not None and getattr(app, "start_btn", None) is not None:
             app.start_btn.configure(image=app._stop_ctk)
-    poll_text_queue(app)
+    poll_text_queue(app, app._poll_generation)
 
 
 def _build_leveler_config(settings):
@@ -809,6 +993,22 @@ def main(splash_window=None):
             except Exception:
                 pass
 
+    def _paint_transcript_pulse(app, phase):
+        """Draw the red border only when the box on screen is the recording meeting."""
+        show = pulse_on_shown_transcript(
+            running=bool(getattr(app, "running", False)),
+            discreet=is_discreet(getattr(app, "settings", None)),
+            recording_meeting_id=getattr(app, "recording_meeting_id", None),
+            shown_meeting_id=getattr(app, "current_meeting_id", None),
+        )
+        if show:
+            app.log.configure(
+                border_width=PULSE_BORDER_WIDTH,
+                border_color=_pulse_color(phase, _pulse_rgb_red_dim, _pulse_rgb_red_bright),
+            )
+        else:
+            app.log.configure(border_width=0)
+
     def _tick_transcript_pulse(app):
         app._transcript_pulse_id = None
         if not getattr(app, "running", False) or not pulse_allowed(getattr(app, "settings", None)):
@@ -816,7 +1016,7 @@ def main(splash_window=None):
             return
         phase = getattr(app, "_transcript_pulse_phase", 0.0)
         try:
-            app.log.configure(border_width=PULSE_BORDER_WIDTH, border_color=_pulse_color(phase, _pulse_rgb_red_dim, _pulse_rgb_red_bright))
+            _paint_transcript_pulse(app, phase)
         except Exception:
             pass
         app._transcript_pulse_phase = phase + (2 * math.pi * PULSE_TICK_MS / 1000.0 / PULSE_CYCLE_SEC)
@@ -909,6 +1109,8 @@ def main(splash_window=None):
     install_error_reporting(root)
     app.running = False
     app._stopping = False
+    app.recording_meeting_id = None
+    app._poll_generation = 0
     # Use multiprocessing primitives so transcription can run in a subprocess (avoids GIL contention with GUI/Teams).
     app.stop_event = multiprocessing.Event()
     # Separate event for the transcription subprocess — only set when the app closes, NOT on Stop.
@@ -1127,13 +1329,16 @@ def main(splash_window=None):
     app.status_var = ctk.StringVar(value="Checking…")
     ctk.CTkLabel(header, textvariable=app.status_var, font=ctk.CTkFont(family=UI_FONT_FAMILY, size=F.header, weight="bold")).pack(side="left", padx=UI_PAD_LG, pady=UI_PAD)
     app.model_status_var = ctk.StringVar(value="Transcription model: Checking…")
-    # Live input volume indicator (small bar, right of status)
+    # Live input volume indicator (small bar, right of status). Hidden in incognito.
     vol_frame = ctk.CTkFrame(header, fg_color="transparent")
     vol_frame.pack(side="right", padx=(0, UI_PAD), pady=UI_PAD)
+    app.volume_frame = vol_frame
+    app._volume_meter_shown = True
     app.volume_bar = ctk.CTkProgressBar(vol_frame, width=72, height=5, corner_radius=3, progress_color=COLORS["primary_fg"], fg_color=("gray88", "gray28"))
     app.volume_bar.set(0)
     app.volume_bar.pack(side="right")
     btn_frame = ctk.CTkFrame(header, fg_color="transparent")
+    app._capture_btn_frame = btn_frame
     btn_frame.pack(side="right", padx=UI_PAD_LG, pady=UI_PAD)
     app.start_btn = None
     app.stop_btn = None
@@ -1174,14 +1379,38 @@ def main(splash_window=None):
         app.stop_btn = ctk.CTkButton(btn_frame, text="Stop", command=lambda: start_stop(app), state="disabled", font=ctk.CTkFont(family=UI_FONT_FAMILY, size=F.header, weight="bold"), width=100, height=36, corner_radius=UI_RADIUS, fg_color=COLORS["danger_fg"], hover_color=COLORS["danger_hover"])
         app.stop_btn.pack(side="left")
 
+    def _set_volume_meter_visible(show):
+        frame = getattr(app, "volume_frame", None)
+        if frame is None:
+            return
+        shown = bool(getattr(app, "_volume_meter_shown", False))
+        if show and not shown:
+            try:
+                frame.pack(side="right", padx=(0, UI_PAD), pady=UI_PAD, before=app._capture_btn_frame)
+                app._volume_meter_shown = True
+            except Exception:
+                pass
+        elif not show and shown:
+            try:
+                frame.pack_forget()
+                app._volume_meter_shown = False
+            except Exception:
+                pass
+
     def apply_discreet_chrome():
-        """Refresh pulse, start/stop presentation, and capturing status from discreet_mode."""
+        """Refresh pulse, volume meter, start/stop presentation, and capturing status from discreet_mode."""
         discreet = is_discreet(getattr(app, "settings", None))
         running = bool(getattr(app, "running", False))
-        if discreet:
+        _set_volume_meter_visible(volume_meter_visible(getattr(app, "settings", None)))
+        if discreet or not running:
             _clear_transcript_pulse(app)
-        elif running and getattr(app, "_transcript_pulse_id", None) is None:
+        elif getattr(app, "_transcript_pulse_id", None) is None:
             _start_transcript_pulse(app)
+        else:
+            try:
+                _paint_transcript_pulse(app, getattr(app, "_transcript_pulse_phase", 0.0))
+            except Exception:
+                pass
         # Single icon button: Incognito uses plain Start/Stop text (no mic/record glyph).
         if getattr(app, "_uses_icon_capture_btn", False) and getattr(app, "start_btn", None) is not None and getattr(app, "stop_btn", None) is None:
             try:
@@ -1489,16 +1718,30 @@ def main(splash_window=None):
     card_header.grid(row=0, column=1, sticky="ew", padx=UI_PAD)
     ctk.CTkLabel(card_header, text="Transcript", font=ctk.CTkFont(family=UI_FONT_FAMILY, size=F.header, weight="bold")).pack(side="left")
     def copy_transcript():
-        text = app.log.get("1.0", "end").rstrip()
+        text = _text_for_meeting_action(app, app.current_meeting_id).rstrip()
         if text:
             root.clipboard_clear()
             root.clipboard_append(text)
             root.update()
     def clear_transcript():
         if messagebox.askyesno("Clear transcript", "Clear the entire transcript? This cannot be undone.", parent=root):
-            cancel_transcript_typewriter_discard_pending(app)
+            rec_id = getattr(app, "recording_meeting_id", None)
+            shown_id = getattr(app, "current_meeting_id", None)
+            if rec_id and rec_id != shown_id:
+                # This box is not the recording. Keep that transcript; clear only this one.
+                flush_transcript_typewriter_immediate(app)
+            else:
+                cancel_transcript_typewriter_discard_pending(app)
             app.log.delete("1.0", "end")
-            app._transcript_tail = ""  # log is now empty; no prefix before next transcribed chunk
+            app._transcript_tail = tail_after_clear(
+                shown_meeting_id=shown_id,
+                recording_meeting_id=rec_id,
+                recording_tail=getattr(app, "_transcript_tail", "") or "",
+            )
+            if rec_id and rec_id == shown_id:
+                _set_recording_transcript(app, "", "")
+            if getattr(app, "schedule_save_meeting", None) is not None:
+                app.schedule_save_meeting()
     ctk.CTkButton(card_header, text="Copy transcript", font=ctk.CTkFont(family=UI_FONT_FAMILY, size=F.small), width=100, height=28, corner_radius=UI_RADIUS, fg_color=COLORS["secondary_fg"], hover_color=COLORS["secondary_hover"], command=copy_transcript).pack(side="left", padx=(UI_PAD, 0), pady=4)
     ctk.CTkButton(card_header, text="Clear", font=ctk.CTkFont(family=UI_FONT_FAMILY, size=F.small), width=50, height=28, corner_radius=UI_RADIUS, fg_color=COLORS["secondary_fg"], hover_color=COLORS["secondary_hover"], command=clear_transcript).pack(side="right", padx=UI_PAD, pady=4)
     transcript_sub = ctk.CTkFrame(card, fg_color="transparent")
@@ -1538,7 +1781,7 @@ def main(splash_window=None):
         if names and (app.summary_prompt_var.get() not in names):
             app.summary_prompt_var.set(names[0])
 
-    def _do_ai_summary():
+    def _do_ai_summary(meeting_id=None):
         # key stored in app (Settings tab)
         api_key = get_openai_api_key()
         if not api_key:
@@ -1557,12 +1800,16 @@ def main(splash_window=None):
         if not prompt_obj or name.startswith("("):
             messagebox.showwarning("Select a prompt", "Choose a prompt template from the dropdown.", parent=root)
             return
-        transcript = app.log.get("1.0", "end").strip()
+        target_meeting_id = meeting_id or app.current_meeting_id
+        transcript = _text_for_meeting_action(app, target_meeting_id).strip()
         if not transcript:
             messagebox.showwarning("Empty transcript", "Transcript is empty. Record or paste some text first.", parent=root)
             return
-        manual_notes = app.manual_notes.get("1.0", "end").strip()
-        target_meeting_id = app.current_meeting_id
+        if target_meeting_id == app.current_meeting_id:
+            manual_notes = app.manual_notes.get("1.0", "end").strip()
+        else:
+            target_meeting = get_meeting_by_id(app.meetings, target_meeting_id)
+            manual_notes = ((target_meeting or {}).get("manual_notes") or "").strip()
         app._summary_for_meeting_id = target_meeting_id
         app.summary_generate_btn.configure(state="disabled")
         app._summary_generating = True
@@ -1606,7 +1853,7 @@ def main(splash_window=None):
 
     def _export_markdown():
         summary = app.summary_text.get("1.0", "end").strip()
-        transcript = app.log.get("1.0", "end").strip()
+        transcript = _text_for_meeting_action(app, app.current_meeting_id).strip()
         manual_notes = app.manual_notes.get("1.0", "end").strip()
         if not summary and not transcript and not manual_notes:
             messagebox.showwarning("Nothing to export", "Add an AI summary, transcript, and/or manual notes first.", parent=root)
@@ -1638,7 +1885,7 @@ def main(splash_window=None):
 
     def _copy_export_to_clipboard():
         summary = app.summary_text.get("1.0", "end").strip()
-        transcript = app.log.get("1.0", "end").strip()
+        transcript = _text_for_meeting_action(app, app.current_meeting_id).strip()
         manual_notes = app.manual_notes.get("1.0", "end").strip()
         if not summary and not transcript and not manual_notes:
             messagebox.showwarning(
@@ -1847,7 +2094,7 @@ def main(splash_window=None):
         result_holder = []
         history_for_api = [{"role": m.get("role"), "content": m.get("content")} for m in messages_so_far[:-1]]
         manual_notes_text = app.manual_notes.get("1.0", "end").strip()
-        transcript_text = app.log.get("1.0", "end").strip()
+        transcript_text = _text_for_meeting_action(app, app.current_meeting_id).strip()
         summary_text_content = app.summary_text.get("1.0", "end").strip()
         def worker():
             model = resolve_model(app.settings, "ask")
@@ -2049,7 +2296,13 @@ def main(splash_window=None):
             fallback=meeting.get("created_at"),
         )
         new_notes = app.manual_notes.get("1.0", "end").strip()
-        new_transcript = app.log.get("1.0", "end").strip()
+        if getattr(app, "recording_meeting_id", None) == mid:
+            try:
+                new_transcript = app.log.get("1.0", "end-1c")
+            except Exception:
+                new_transcript = app.log.get("1.0", "end").strip()
+        else:
+            new_transcript = app.log.get("1.0", "end").strip()
         new_summary = app.summary_text.get("1.0", "end").strip()
         if (
             meeting.get("meeting_name") == new_name
@@ -2104,6 +2357,7 @@ def main(splash_window=None):
         app._save_meeting_after_id = root.after(delay_ms, run)
 
     app.schedule_save_meeting = schedule_save_meeting
+    app.commit_shown_meeting = _do_save_meeting
 
     def _set_meeting_dates_var(meeting):
         """Update the meeting date + Created / Updated line from meeting dict."""
@@ -2123,9 +2377,20 @@ def main(splash_window=None):
     def load_meeting_to_ui(meeting):
         if not meeting:
             return
+        leaving_id = getattr(app, "current_meeting_id", None)
+        recording_id = getattr(app, "recording_meeting_id", None)
+        # Commit the box we're leaving before swapping it, including typewriter
+        # text that has not been saved yet. Same-meeting reloads (delete of
+        # another row) still flush so the recording transcript is not rewound.
+        if leaving_id and (leaving_id != meeting["id"] or recording_id == leaving_id):
+            flush_transcript_typewriter_immediate(app)
+            sync_ui_to_current_meeting()
         app._loading_meeting = True
         try:
-            cancel_transcript_typewriter_discard_pending(app)
+            if not recording_id:
+                cancel_transcript_typewriter_discard_pending(app)
+            else:
+                _cancel_transcript_typewriter_timer(app)
             app.current_meeting_id = meeting["id"]
             app.meeting_name_var.set(meeting.get("meeting_name") or "New Meeting")
             app.meeting_date_var.set(_normalize_meeting_date(meeting.get("meeting_date"), fallback=meeting.get("created_at")))
@@ -2135,13 +2400,25 @@ def main(splash_window=None):
             app.log.delete("1.0", "end")
             transcript_content = meeting.get("transcript") or ""
             app.log.insert("1.0", transcript_content)
-            app._transcript_tail = transcript_content[-1] if transcript_content else ""
+            app._transcript_tail = tail_after_show(
+                shown_meeting_id=meeting["id"],
+                recording_meeting_id=recording_id,
+                shown_transcript=transcript_content,
+                recording_tail=getattr(app, "_transcript_tail", "") or "",
+            )
             app.summary_text.delete("1.0", "end")
             app.summary_text.insert("1.0", meeting.get("ai_summary") or "")
             app._update_generate_name_btn_state()
             ensure_meeting_has_ai_chat_messages(meeting)
             app._ask_ai_show_messages(meeting.get("ai_chat_messages", []))
             app._ask_ai_update_send_state()
+            if recording_id and getattr(app, "running", False):
+                try:
+                    _paint_transcript_pulse(app, getattr(app, "_transcript_pulse_phase", 0.0))
+                except Exception:
+                    pass
+                if getattr(app, "_transcript_pulse_id", None) is None and pulse_allowed(getattr(app, "settings", None)):
+                    _start_transcript_pulse(app)
         finally:
             app._loading_meeting = False
 
@@ -2169,6 +2446,9 @@ def main(splash_window=None):
             )
 
     def _select_meeting(meeting_id):
+        if meeting_id == app.current_meeting_id:
+            return
+        flush_transcript_typewriter_immediate(app)
         _do_save_meeting()
         m = get_meeting_by_id(app.meetings, meeting_id)
         if m:
@@ -2176,22 +2456,30 @@ def main(splash_window=None):
         _update_sidebar_selection_highlight()
 
     def _new_meeting():
+        flush_transcript_typewriter_immediate(app)
         _do_save_meeting()
         new_m = create_meeting("New Meeting")
         app.meetings.insert(0, new_m)
-        save_meetings(app.meetings)
+        _publish_meetings_now(app)
         load_meeting_to_ui(new_m)
         app.refresh_sidebar_meetings_list()
 
     def _delete_meeting(meeting_id, event=None):
         if not messagebox.askyesno("Delete meeting", "Delete this meeting? This cannot be undone.", parent=root):
             return
+        if (
+            deletion_stops_recording(getattr(app, "recording_meeting_id", None), meeting_id)
+            and app.running
+            and not getattr(app, "_stopping", False)
+        ):
+            start_stop(app)
+        else:
+            flush_transcript_typewriter_immediate(app)
         _do_save_meeting()
         delete_meeting_by_id(app.meetings, meeting_id)
-        save_meetings(app.meetings)
         if not app.meetings:
             ensure_at_least_one_meeting(app.meetings)
-            save_meetings(app.meetings)
+        _publish_meetings_now(app)
         next_m = app.meetings[0] if app.meetings else None
         if next_m:
             load_meeting_to_ui(next_m)
@@ -2250,6 +2538,7 @@ def main(splash_window=None):
 
     def _on_meeting_name_changed(*args):
         schedule_save_meeting()
+        _refresh_recording_status(app)
     app.meeting_name_var.trace_add("write", _on_meeting_name_changed)
 
     def _on_manual_notes_changed(event=None):
@@ -2926,7 +3215,51 @@ def main(splash_window=None):
     app.model_status_label = None
     # Model status and Record button are updated by _startup_check_done after background check (and optional load).
 
-    root.protocol("WM_DELETE_WINDOW", lambda: (app.stop_event.set(), root.destroy()))
+    def _on_app_close():
+        """Flush the recording transcript and stop capture before the window goes away."""
+        try:
+            flush_transcript_typewriter_immediate(app)
+        except Exception:
+            pass
+        commit = getattr(app, "commit_shown_meeting", None)
+        if callable(commit):
+            try:
+                commit()
+            except Exception:
+                pass
+        try:
+            # Drop stale snapshots already queued, then write the final list
+            # and stop the writer so it cannot overwrite that write.
+            save_q = getattr(app, "_save_meetings_queue", None)
+            if save_q is not None:
+                try:
+                    while True:
+                        save_q.get_nowait()
+                except queue.Empty:
+                    pass
+                save_q.put(copy.deepcopy(app.meetings))
+                save_q.put(None)
+                writer = getattr(app, "_save_meetings_thread", None)
+                if writer is not None:
+                    writer.join(timeout=2.0)
+            else:
+                save_meetings(app.meetings)
+        except Exception:
+            try:
+                save_meetings(app.meetings)
+            except Exception:
+                pass
+        try:
+            app.stop_event.set()
+        except Exception:
+            pass
+        try:
+            app.transcription_stop_event.set()
+        except Exception:
+            pass
+        root.destroy()
+
+    root.protocol("WM_DELETE_WINDOW", _on_app_close)
     root.mainloop()
 
 
