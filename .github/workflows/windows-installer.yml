@@ -1,0 +1,179 @@
+# Build the Windows setup exe and attach it to a DRAFT GitHub Release.
+# Never publishes. AJ reviews the draft and publishes it.
+# Uses only GITHUB_TOKEN (contents: write). No tokens are passed into the app build.
+
+name: Windows installer
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Release version without a leading v (must match app/__init__.py)"
+        required: true
+        type: string
+  push:
+    tags:
+      # Glob, not regex. The version step rejects anything that is not MAJOR.MINOR or MAJOR.MINOR.PATCH.
+      - "v*"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: windows-installer-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  installer:
+    name: Build draft Windows setup
+    runs-on: windows-latest
+    timeout-minutes: 90
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: |
+            requirements.txt
+            requirements-build.txt
+
+      - name: Resolve version
+        id: ver
+        shell: bash
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          INPUT_VERSION: ${{ github.event.inputs.version }}
+          REF_NAME: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          if [ "$EVENT_NAME" = "workflow_dispatch" ]; then
+            raw="$INPUT_VERSION"
+          else
+            raw="$REF_NAME"
+          fi
+          export REQUESTED_VERSION="$raw"
+          python scripts/ci_release_version.py
+          ver="${raw#v}"
+          ver="${ver#V}"
+          echo "version=$ver" >> "$GITHUB_OUTPUT"
+
+      - name: Install dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt -r requirements-build.txt
+
+      - name: Check onnx_asr preprocessors are installed
+        shell: bash
+        run: python scripts/ci_onnx_preprocessors.py --installed
+
+      - name: PyInstaller
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p ci-logs
+          python -m PyInstaller meetings.spec --noconfirm --clean 2>&1 | tee ci-logs/pyinstaller.log
+
+      - name: Verify bundled preprocessors and warn file
+        shell: bash
+        run: |
+          set -euo pipefail
+          python scripts/ci_onnx_preprocessors.py --dist
+          python scripts/ci_pyinstaller_warn.py
+
+      - name: Install Inno Setup
+        shell: pwsh
+        run: choco install innosetup -y --no-progress
+
+      - name: Compile installer
+        shell: bash
+        run: |
+          set -euo pipefail
+          iscc=""
+          for candidate in \
+            "/c/Program Files (x86)/Inno Setup 6/ISCC.exe" \
+            "/c/Program Files/Inno Setup 6/ISCC.exe"
+          do
+            if [ -f "$candidate" ]; then
+              iscc="$candidate"
+              break
+            fi
+          done
+          if [ -z "$iscc" ]; then
+            echo "ISCC.exe not found" >&2
+            exit 1
+          fi
+          echo "Using $iscc"
+          "$iscc" installer.iss
+
+      - name: Name asset and check size
+        shell: bash
+        run: |
+          set -euo pipefail
+          ver="${{ steps.ver.outputs.version }}"
+          src="installer_output/Rapid Scribe v${ver}-Setup.exe"
+          dst="installer_output/Rapid.Scribe.v${ver}-Setup.exe"
+          if [ ! -f "$src" ]; then
+            echo "Expected installer missing: $src" >&2
+            ls -la installer_output || true
+            exit 1
+          fi
+          mv "$src" "$dst"
+          python scripts/ci_setup_size.py "$dst"
+          {
+            echo "### Windows setup"
+            echo "- Asset: \`Rapid.Scribe.v${ver}-Setup.exe\`"
+            python scripts/ci_setup_size.py "$dst" | sed 's/^/- /'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload setup and PyInstaller logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: Rapid.Scribe.v${{ steps.ver.outputs.version }}-Setup
+          path: |
+            installer_output/Rapid.Scribe.v*-Setup.exe
+            ci-logs/**
+          if-no-files-found: warn
+
+      - name: Attach to draft release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.ver.outputs.version }}
+          BUILD_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          tag="v${VERSION}"
+          asset="installer_output/Rapid.Scribe.v${VERSION}-Setup.exe"
+          notes_file="ci-logs/release-notes.md"
+          printf '%s\n' \
+            "Draft Windows installer for Rapid Scribe ${tag}." \
+            "" \
+            "Built from \`${BUILD_SHA}\` by the Windows installer workflow." \
+            "AJ reviews and publishes this release. This workflow does not publish it." \
+            > "$notes_file"
+          if gh release view "$tag" >/dev/null 2>&1; then
+            draft=$(gh release view "$tag" --json isDraft --jq .isDraft)
+            if [ "$draft" != "true" ]; then
+              echo "Refusing to modify published release $tag" >&2
+              exit 1
+            fi
+            gh release upload "$tag" "$asset" --clobber
+          else
+            gh release create "$tag" "$asset" \
+              --draft \
+              --title "$tag" \
+              --notes "$(cat "$notes_file")"
+          fi
+          draft=$(gh release view "$tag" --json isDraft --jq .isDraft)
+          if [ "$draft" != "true" ]; then
+            echo "Release $tag is not a draft" >&2
+            exit 1
+          fi
+          gh release view "$tag" --json url,isDraft,tagName,assets --jq '{url:.url,isDraft:.isDraft,tag:.tagName,assets:[.assets[].name]}'
