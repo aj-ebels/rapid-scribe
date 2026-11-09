@@ -7,8 +7,10 @@ pyaudiowpatch>=0.2.12.7; sys_platform == "win32"
 numpy>=1.24.0
 scipy>=1.10.0
 customtkinter>=5.2.0
-# Parakeet via onnx-asr (same approach as Meetily). For GPU: pip install "onnx-asr[gpu,hub]>=0.10.0"
-onnx-asr[cpu,hub]>=0.10.0
+# Parakeet via onnx-asr (same approach as Meetily). For GPU: pip install "onnx-asr[gpu,hub]==0.12.0"
+# Pinned to 0.12.0. 0.11+ reads importlib.metadata on import; meetings.spec copies that dist-info.
+# 0.10.2 was the last release that did not. 0.12.0 has been current since 2026-07-15.
+onnx-asr[cpu,hub]==0.12.0
 # OpenAI API for AI Summary
 openai>=1.0.0
 # 11+ recommended for Python 3.13 + Tk on Windows (older Pillow can fail loading _imagingtk).

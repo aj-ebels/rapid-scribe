@@ -86,6 +86,28 @@ jobs:
           python scripts/ci_onnx_preprocessors.py --dist
           python scripts/ci_pyinstaller_warn.py
 
+      - name: Frozen metadata smoke test
+        shell: pwsh
+        env:
+          RAPID_SCRIBE_REQUIRE_FROZEN: "1"
+        run: |
+          $ErrorActionPreference = "Stop"
+          New-Item -ItemType Directory -Force -Path ci-logs | Out-Null
+          $exe = Join-Path (Get-Location) "dist\Rapid Scribe\Rapid Scribe.exe"
+          $log = Join-Path (Get-Location) "ci-logs\frozen-smoke.txt"
+          if (-not (Test-Path -LiteralPath $exe)) { throw "missing $exe" }
+          $proc = Start-Process -FilePath $exe -ArgumentList @("--frozen-smoke", $log) -PassThru
+          if (-not $proc.WaitForExit(180000)) {
+            try { $proc.Kill() } catch { }
+            throw "frozen smoke hung past 180s"
+          }
+          Write-Host "frozen-smoke exit $($proc.ExitCode)"
+          if (Test-Path -LiteralPath $log) { Get-Content -LiteralPath $log | Write-Host }
+          if ($proc.ExitCode -ne 0) { throw "frozen smoke failed: $($proc.ExitCode)" }
+          $text = Get-Content -LiteralPath $log -Raw
+          if ($text -notmatch "(?m)^OK\s*$") { throw "frozen smoke log did not end with OK" }
+          if ($text -notmatch "nemo128\.onnx \d+") { throw "frozen smoke did not read nemo128.onnx" }
+
       - name: Install Inno Setup
         shell: pwsh
         run: choco install innosetup -y --no-progress

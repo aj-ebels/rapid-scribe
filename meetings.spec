@@ -32,6 +32,22 @@ try:
 except Exception:
     pass
 
+# dist-info. onnx-asr 0.11+ calls importlib.metadata.version("onnx-asr") on import.
+# Without this, Start dies with "No package metadata was found for onnx-asr".
+import importlib.util
+
+from PyInstaller.utils.hooks import copy_metadata
+
+_bm_file = os.path.join(SPEC_DIR, "app", "bundle_metadata.py")
+_bm_spec = importlib.util.spec_from_file_location("rapid_scribe_bundle_metadata", _bm_file)
+_bm = importlib.util.module_from_spec(_bm_spec)
+_bm_spec.loader.exec_module(_bm)
+for _dist in _bm.METADATA_DISTS:
+    _entries = copy_metadata(_dist)
+    if not _entries:
+        raise SystemExit(f"copy_metadata({_dist!r}) returned no files")
+    datas += _entries
+
 # Hidden imports for dynamic / optional modules
 hiddenimports = [
     "customtkinter",
