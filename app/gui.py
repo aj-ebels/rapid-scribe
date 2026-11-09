@@ -26,6 +26,7 @@ from .settings import load_settings, save_settings, AUDIO_MODE_DEFAULT, AUDIO_MO
 from .discreet_mode import (
     is_discreet,
     pulse_allowed,
+    should_refresh_idle_status,
     status_for_capture_state,
 )
 from . import dev_config as _dev_cfg
@@ -1232,7 +1233,7 @@ def main(splash_window=None):
                 )
         elif not running and getattr(app, "status_var", None) is not None:
             cur = app.status_var.get()
-            if cur in ("Ready to record & transcribe", "Ready", "Stopped") or cur.startswith("Ready"):
+            if should_refresh_idle_status(cur):
                 app.status_var.set(
                     status_for_capture_state(
                         app.settings,
@@ -2342,6 +2343,7 @@ def main(splash_window=None):
         text_color="gray",
         wraplength=520,
         anchor="w",
+        justify="left",
     ).pack(anchor="w", pady=(0, 6))
     app.discreet_mode_var = ctk.BooleanVar(value=bool(app.settings.get("discreet_mode", False)))
 

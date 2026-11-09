@@ -2,6 +2,7 @@
 from app.discreet_mode import (
     is_discreet,
     pulse_allowed,
+    should_refresh_idle_status,
     status_for_capture_state,
     STATUS_DISCREET_CAPTURING,
     STATUS_DISCREET_READY,
@@ -30,6 +31,15 @@ def test_status_matrix():
     assert status_for_capture_state(off, running=False, mode_off_capturing=loud_cap, mode_off_ready=loud_ready) == loud_ready
     assert status_for_capture_state(on, running=True, mode_off_capturing=loud_cap, mode_off_ready=loud_ready) == STATUS_DISCREET_CAPTURING
     assert status_for_capture_state(on, running=False, mode_off_capturing=loud_cap, mode_off_ready=loud_ready) == STATUS_DISCREET_READY
+
+
+def test_idle_status_keeps_stopped_and_refreshes_ready_copy():
+    assert should_refresh_idle_status("Stopped") is False
+    assert should_refresh_idle_status("Stopping...") is False
+    assert should_refresh_idle_status("Install the transcription model first (Model tab → Download & install)") is False
+    assert should_refresh_idle_status("Checking…") is False
+    assert should_refresh_idle_status("Ready") is True
+    assert should_refresh_idle_status("Ready to record & transcribe") is True
 
 
 def test_load_settings_includes_discreet_mode_default(tmp_path, monkeypatch):

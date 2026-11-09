@@ -22,6 +22,21 @@ def pulse_allowed(settings: Optional[dict]) -> bool:
     return not is_discreet(settings)
 
 
+def should_refresh_idle_status(current: Optional[str]) -> bool:
+    """Whether an idle status line should follow the current mode's ready copy.
+
+    Stopping and Stopped stay put so mode-off still ends on "Stopped" (R7, KTD5).
+    Install prompts stay explicit. Ready-style lines switch between discreet and normal.
+    """
+    if not isinstance(current, str) or not current:
+        return False
+    if current in ("Stopping...", "Stopped"):
+        return False
+    if "Install the transcription model" in current:
+        return False
+    return current.startswith("Ready")
+
+
 def status_for_capture_state(
     settings: Optional[dict],
     *,
