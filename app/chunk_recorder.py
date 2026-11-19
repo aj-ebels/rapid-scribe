@@ -16,6 +16,7 @@ import numpy as np
 from scipy.io import wavfile
 from scipy.signal import resample
 from .audio_leveler import AudioLeveler, AudioLevelerConfig
+from .diagnostic import write as diag
 
 
 def _ensure_dir(path: str):
@@ -198,38 +199,26 @@ class ChunkRecorder:
         try:
             wavfile.write(wav_path, self.asr_sample_rate, mono_int16)
         except Exception as e:
-            try:
-                from diagnostic import write as diag
-                diag("chunk_write_failed", path=wav_path, error=str(e))
-            except ImportError:
-                pass
+            diag("chunk_write_failed", path=wav_path, error=str(e))
             import logging
             logging.getLogger(__name__).exception("Failed to write chunk WAV %s: %s", wav_path, e)
             return
-        try:
-            from diagnostic import write as diag
-            diag(
-                "chunk_flushed",
-                path=wav_path,
-                written_frames=len(to_write),
-                remainder_frames=remainder_frames,
-                rms_in=round(float(level_stats.get("rms_in", 0.0)), 6),
-                rms_out=round(float(level_stats.get("rms_out", 0.0)), 6),
-                gain_db=round(float(level_stats.get("gain_db", 0.0)), 2),
-                noise_floor=round(float(level_stats.get("noise_floor", 0.0)), 6),
-            )
-        except ImportError:
-            pass
+        diag(
+            "chunk_flushed",
+            path=wav_path,
+            written_frames=len(to_write),
+            remainder_frames=remainder_frames,
+            rms_in=round(float(level_stats.get("rms_in", 0.0)), 6),
+            rms_out=round(float(level_stats.get("rms_out", 0.0)), 6),
+            gain_db=round(float(level_stats.get("gain_db", 0.0)), 2),
+            noise_floor=round(float(level_stats.get("noise_floor", 0.0)), 6),
+        )
         cb = self.on_chunk_ready
         if cb is not None:
             try:
                 cb(wav_path, chunk_rms)
             except Exception as e:
-                try:
-                    from diagnostic import write as diag
-                    diag("on_chunk_ready_failed", path=wav_path, error=str(e))
-                except ImportError:
-                    pass
+                diag("on_chunk_ready_failed", path=wav_path, error=str(e))
                 import logging
                 logging.getLogger(__name__).exception("on_chunk_ready failed: %s", e)
 

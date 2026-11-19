@@ -201,3 +201,31 @@ def get_effective_audio_device(app):
     if mode == AUDIO_MODE_MEETING or mode == "meeting_ffmpeg":
         return (AUDIO_MODE_MEETING, settings.get("meeting_mic_device"), settings.get("loopback_device_index"))
     return (AUDIO_MODE_DEFAULT, None, None)
+
+
+def frames_to_read(available, frames_per_read) -> int:
+    """Frames that can be read without blocking. Zero means do not call read()."""
+    if not available or int(available) <= 0:
+        return 0
+    return min(int(available), int(frames_per_read))
+
+
+def _device_name_changed(current: str, new: str) -> bool:
+    cur = (current or "").strip().casefold()
+    nxt = (new or "").strip().casefold()
+    return bool(cur and nxt and cur != nxt)
+
+
+def default_devices_changed(
+    *,
+    follow_mic: bool,
+    follow_loopback: bool,
+    current_mic_name: str,
+    current_loopback_name: str,
+    default_mic_name: str,
+    default_loopback_name: str,
+) -> bool:
+    """True when a session that started on the system default should reopen."""
+    mic = follow_mic and _device_name_changed(current_mic_name, default_mic_name)
+    loop = follow_loopback and _device_name_changed(current_loopback_name, default_loopback_name)
+    return mic or loop
