@@ -154,22 +154,32 @@ class AudioMixer:
             self._loopback_buffer_samples = 0
         return out
 
-    def _info_named(self, p, name):
-        """Find a device by the name saved at Start. Never substitutes another device."""
+    def _info_named(self, p, name, host_api):
+        """Find a WASAPI device by the name saved at Start. Never substitutes another device.
+
+        MME and DirectSound list the same names at lower indexes, so hostApi must match.
+        """
         want = (name or "").strip().casefold()
         if not want:
             raise RuntimeError("Saved capture device has no name")
+
+        def _same(info):
+            return (
+                info.get("hostApi") == host_api
+                and str(info.get("name") or "").strip().casefold() == want
+            )
+
         try:
             count = int(p.get_device_count())
         except Exception:
             count = 0
         for i in range(count):
             info = p.get_device_info_by_index(i)
-            if str(info.get("name") or "").strip().casefold() == want:
+            if _same(info):
                 return info
         try:
             for info in p.get_loopback_device_info_generator():
-                if str(info.get("name") or "").strip().casefold() == want:
+                if _same(info):
                     return info
         except Exception:
             pass
@@ -181,14 +191,15 @@ class AudioMixer:
         A saved name is used after PortAudio re-init, because device indexes move.
         """
         wasapi_info = p.get_host_api_info_by_type(pyaudio.paWASAPI)
+        host_api = wasapi_info["index"]
         if mic_name:
-            mic_info = self._info_named(p, mic_name)
+            mic_info = self._info_named(p, mic_name, host_api)
         else:
             if mic_index is None:
                 mic_index = wasapi_info["defaultInputDevice"]
             mic_info = p.get_device_info_by_index(mic_index)
         if loop_name:
-            return mic_info, self._info_named(p, loop_name)
+            return mic_info, self._info_named(p, loop_name, host_api)
         if loop_index is not None:
             return mic_info, p.get_device_info_by_index(loop_index)
         else:
@@ -346,7 +357,9 @@ class AudioMixer:
         last_audio = time.monotonic()
         while self._running:
             if self._mic_stream is None or self._loopback_stream is None:
-                if not self._reopen_streams():
+                if self._reopen_streams():
+                    last_audio = time.monotonic()
+                else:
                     time.sleep(0.2)
                 continue
             try:

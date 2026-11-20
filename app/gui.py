@@ -763,10 +763,10 @@ def start_stop(app):
             diag(
                 "meeting_started",
                 mixer_ok=True,
-                mic_name=app.mixer._mic_name,
-                loopback_name=app.mixer._loopback_name,
-                mic_hz=app.mixer._mic_sample_rate,
-                loopback_hz=app.mixer._loopback_sample_rate,
+                mic_name=getattr(app.mixer, "_mic_name", None),
+                loopback_name=getattr(app.mixer, "_loopback_name", None),
+                mic_hz=getattr(app.mixer, "_mic_sample_rate", None),
+                loopback_hz=getattr(app.mixer, "_loopback_sample_rate", None),
             )
         except Exception as e:
             diag("meeting_start_failed", error=str(e))

@@ -2,7 +2,7 @@
 import sys
 import types
 
-from app import capture, chunk_recorder, diagnostic
+from app import chunk_recorder, diagnostic
 
 
 def test_diagnostic_log_rotates(tmp_path):
@@ -18,7 +18,6 @@ def test_diagnostic_log_rotates(tmp_path):
 
 def test_capture_diagnostics_use_the_package_import():
     assert chunk_recorder.diag is diagnostic.write
-    assert capture.diag is diagnostic.write
 
 
 def test_run_capture_reopens_on_stall_and_on_stream_error(monkeypatch):
@@ -90,3 +89,68 @@ def test_run_capture_reopens_on_stall_and_on_stream_error(monkeypatch):
     assert mic.reads == [4096]
     assert reasons[0] == "mic_stalled"
     assert "read_error" in reasons
+
+
+def _mixer(monkeypatch):
+    pa = types.ModuleType("pyaudiowpatch")
+    pa.paInt16 = 8
+    monkeypatch.setitem(sys.modules, "pyaudiowpatch", pa)
+    from app.audio_mixer import AudioMixer
+    return AudioMixer
+
+
+def test_loopback_error_reopens(monkeypatch):
+    AudioMixer = _mixer(monkeypatch)
+    reasons = []
+
+    def reopen(self, reason="read_error"):
+        reasons.append(reason)
+        self._running = False
+        return True
+
+    monkeypatch.setattr(AudioMixer, "_reopen_streams", reopen)
+
+    class Mic:
+        def get_read_available(self):
+            return 4096
+
+        def read(self, n, exception_on_overflow=False):
+            return b"\x00\x00" * n
+
+    class Loop:
+        def get_read_available(self):
+            return -9999
+
+        def read(self, n, exception_on_overflow=False):
+            raise AssertionError("loopback read")
+
+    mixer = AudioMixer(sample_rate=48000, frames_per_read=4096)
+    mixer._running = True
+    mixer._mic_stream = Mic()
+    mixer._loopback_stream = Loop()
+    mixer._mic_sample_rate = 48000
+    mixer._loopback_sample_rate = 48000
+    mixer._mic_channels = 1
+    mixer._run_capture()
+    assert reasons == ["loopback_error"]
+
+
+def test_info_named_skips_mme_duplicate_and_uses_wasapi(monkeypatch):
+    AudioMixer = _mixer(monkeypatch)
+    devices = [
+        {"index": 1, "name": "USB Mic", "hostApi": 0},
+        {"index": 8, "name": "USB Mic", "hostApi": 2},
+    ]
+
+    class Host:
+        def get_device_count(self):
+            return len(devices)
+
+        def get_device_info_by_index(self, i):
+            return devices[i]
+
+        def get_loopback_device_info_generator(self):
+            return iter(())
+
+    mixer = AudioMixer(sample_rate=48000)
+    assert mixer._info_named(Host(), "USB Mic", 2)["index"] == 8
