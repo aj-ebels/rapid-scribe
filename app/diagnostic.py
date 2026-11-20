@@ -15,9 +15,6 @@ _ready = False
 
 
 def _get_log_path():
-    override = os.environ.get("MEETINGS_DIAGNOSTIC_LOG", "").strip()
-    if override:
-        return Path(override)
     if os.name == "nt":
         base = os.environ.get("APPDATA", str(Path.home() / "AppData" / "Roaming"))
     elif sys.platform == "darwin":
@@ -80,7 +77,10 @@ def write(*parts, **kwargs):
         line = " ".join(str(p) for p in parts) + (" " + extra if extra else "") + "\n"
         path = _get_log_path()
         path.parent.mkdir(parents=True, exist_ok=True)
-        rotate_log(path)
+        try:
+            rotate_log(path)
+        except Exception:
+            pass
         with open(path, "a", encoding="utf-8") as handle:
             handle.write(f"{ts} | {line}")
     except Exception:

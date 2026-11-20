@@ -760,7 +760,14 @@ def start_stop(app):
             app.capture_thread = None
             app.capture_threads = []
             app._capturing_status_loud = "Meeting (mic + loopback) — recording…"
-            diag("meeting_started", mixer_ok=True)
+            diag(
+                "meeting_started",
+                mixer_ok=True,
+                mic_name=app.mixer._mic_name,
+                loopback_name=app.mixer._loopback_name,
+                mic_hz=app.mixer._mic_sample_rate,
+                loopback_hz=app.mixer._loopback_sample_rate,
+            )
         except Exception as e:
             diag("meeting_start_failed", error=str(e))
             app.log.insert("end", f"[Meeting] Start failed: {e}\n")
