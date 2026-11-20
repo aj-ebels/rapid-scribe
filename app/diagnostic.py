@@ -8,7 +8,10 @@ import sys
 from datetime import datetime
 from pathlib import Path
 
-_log_file = None
+# Rotate diagnostic.log so a long webinar cannot grow it without bound (field log was 16 MB).
+_MAX_BYTES = 5 * 1024 * 1024
+_BACKUPS = 3
+_ready = False
 
 
 def _get_log_path():
@@ -32,33 +35,53 @@ def _enabled():
     return os.environ.get("MEETINGS_DEBUG", "").strip().lower() in ("1", "true", "yes")
 
 
+def rotate_log(path: Path, *, max_bytes: int = _MAX_BYTES, backups: int = _BACKUPS) -> None:
+    """Rename path to path.1 .. path.N when it is already over max_bytes. Keeps `backups` old files."""
+    try:
+        if path.stat().st_size <= max_bytes:
+            return
+    except OSError:
+        return
+    oldest = Path(f"{path}.{backups}")
+    if oldest.exists():
+        oldest.unlink()
+    for i in range(backups - 1, 0, -1):
+        src = Path(f"{path}.{i}")
+        if src.exists():
+            src.replace(Path(f"{path}.{i + 1}"))
+    if path.exists():
+        path.replace(Path(f"{path}.1"))
+
+
 def init():
     """Call once at startup. Enables file logging when frozen or MEETINGS_DEBUG=1."""
-    global _log_file
-    if _log_file is not None or not _enabled():
+    global _ready
+    if _ready or not _enabled():
         return
-    try:
-        log_path = _get_log_path()
-        log_path.parent.mkdir(parents=True, exist_ok=True)
-        _log_file = open(log_path, "a", encoding="utf-8")
-        write("---", "start", frozen=getattr(sys, "frozen", False), cwd=os.getcwd())
-    except Exception:
-        _log_file = None
+    _ready = True
+    write("---", "start", frozen=getattr(sys, "frozen", False), cwd=os.getcwd())
 
 
 def write(*parts, **kwargs):
-    """Append one line to the diagnostic log (when enabled). Flush so user can tail the file."""
-    global _log_file
-    if _log_file is None:
-        if _enabled():
-            init()
-        if _log_file is None:
+    """Append one line to the diagnostic log (when enabled)."""
+    global _ready
+    if not _enabled():
+        return
+    if not _ready:
+        init()
+        if not _ready:
             return
     try:
         ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         extra = " ".join(f"{k}={v!r}" for k, v in kwargs.items()) if kwargs else ""
         line = " ".join(str(p) for p in parts) + (" " + extra if extra else "") + "\n"
-        _log_file.write(f"{ts} | {line}")
-        _log_file.flush()
+        path = _get_log_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            rotate_log(path)
+        except Exception:
+            pass
+        with open(path, "a", encoding="utf-8") as handle:
+            handle.write(f"{ts} | {line}")
     except Exception:
         pass

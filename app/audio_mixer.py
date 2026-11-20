@@ -1,6 +1,7 @@
 """
 In-process WASAPI mic + loopback capture (PyAudioWPatch).
-Single thread: mic read is blocking (steady stream). Loopback is drained into a
+Single thread: the mic is polled with get_read_available and a full block is read
+only when one is waiting, so a dead endpoint cannot block the thread. Loopback is drained into a
 time-aligned ring buffer; each block consumes exactly the loopback samples that
 correspond to that block's duration, so the loopback timeline is continuous and
 transcription quality is preserved.
@@ -14,6 +15,7 @@ from collections import deque
 import numpy as np
 from scipy.signal import resample
 from .audio_leveler import AudioLeveler, AudioLevelerConfig
+from .diagnostic import write as diag
 
 log = logging.getLogger(__name__)
 
@@ -21,6 +23,7 @@ log = logging.getLogger(__name__)
 MAX_LOOPBACK_BUF_SAMPLES = 240000
 STREAM_REOPEN_COOLDOWN_SEC = 2.0
 MIC_ERROR_REOPEN_THRESHOLD = 5
+MIC_STALL_SEC = 3.0
 
 try:
     import pyaudiowpatch as pyaudio
@@ -85,6 +88,10 @@ class AudioMixer:
         self._loopback_buffer_samples = 0
         self._mic_device_index = None
         self._loopback_device_index = None
+        self._mic_name = ""
+        self._loopback_name = ""
+        self._follow_mic_default = False
+        self._follow_loopback_default = False
         self._mic_read_errors = 0
         self._last_reopen_attempt = 0.0
 
@@ -147,24 +154,87 @@ class AudioMixer:
             self._loopback_buffer_samples = 0
         return out
 
-    def _reopen_streams(self) -> bool:
-        if not self._running or self._p is None:
-            return False
-        now = time.time()
-        if now - self._last_reopen_attempt < STREAM_REOPEN_COOLDOWN_SEC:
-            return False
-        self._last_reopen_attempt = now
-        try:
-            self._close_stream(self._mic_stream, "Mic")
-            self._close_stream(self._loopback_stream, "Loopback")
-            self._mic_stream = self._p.open(
-                format=PA_FORMAT,
-                channels=self._mic_channels,
-                rate=self._mic_sample_rate,
-                frames_per_buffer=self.frames_per_read,
-                input=True,
-                input_device_index=self._mic_device_index,
+    def _info_named(self, p, name, host_api):
+        """Find a WASAPI device by the name saved at Start. Never substitutes another device.
+
+        MME and DirectSound list the same names at lower indexes, so hostApi must match.
+        """
+        want = (name or "").strip().casefold()
+        if not want:
+            raise RuntimeError("Saved capture device has no name")
+
+        def _same(info):
+            return (
+                info.get("hostApi") == host_api
+                and str(info.get("name") or "").strip().casefold() == want
             )
+
+        try:
+            count = int(p.get_device_count())
+        except Exception:
+            count = 0
+        for i in range(count):
+            info = p.get_device_info_by_index(i)
+            if _same(info):
+                return info
+        try:
+            for info in p.get_loopback_device_info_generator():
+                if _same(info):
+                    return info
+        except Exception:
+            pass
+        raise RuntimeError("Device %r is not available" % name)
+
+    def _lookup_devices(self, p, mic_index, loop_index, *, mic_name=None, loop_name=None):
+        """Resolve mic and loopback infos. None index means the current WASAPI default.
+
+        A saved name is used after PortAudio re-init, because device indexes move.
+        """
+        wasapi_info = p.get_host_api_info_by_type(pyaudio.paWASAPI)
+        host_api = wasapi_info["index"]
+        if mic_name:
+            mic_info = self._info_named(p, mic_name, host_api)
+        else:
+            if mic_index is None:
+                mic_index = wasapi_info["defaultInputDevice"]
+            mic_info = p.get_device_info_by_index(mic_index)
+        if loop_name:
+            return mic_info, self._info_named(p, loop_name, host_api)
+        if loop_index is not None:
+            return mic_info, p.get_device_info_by_index(loop_index)
+        else:
+            speakers = p.get_device_info_by_index(wasapi_info["defaultOutputDevice"])
+            if speakers.get("isLoopbackDevice"):
+                loop_info = speakers
+            else:
+                loop_info = None
+                for dev in p.get_loopback_device_info_generator():
+                    if speakers["name"] in dev["name"]:
+                        loop_info = dev
+                        break
+                if loop_info is None:
+                    raise RuntimeError("Default loopback device not found.")
+        return mic_info, loop_info
+
+    @staticmethod
+    def _device_rate(info, fallback=48000):
+        r = info.get("defaultSampleRate") or fallback
+        r = int(r) if r else fallback
+        return r if r > 0 else fallback
+
+    def _open_devices(self, mic_info, loop_info, *, set_output_rate: bool):
+        """Open streams. The recorder keeps the rate from the first start."""
+        self._mic_channels = max(1, int(mic_info.get("maxInputChannels", 1)))
+        self._loopback_channels = max(1, int(loop_info.get("maxInputChannels", 1)))
+        self._mic_device_index = int(mic_info["index"])
+        self._loopback_device_index = int(loop_info["index"])
+        self._mic_name = str(mic_info.get("name") or "")
+        self._loopback_name = str(loop_info.get("name") or "")
+        self._mic_sample_rate = self._device_rate(mic_info)
+        self._loopback_sample_rate = self._device_rate(loop_info)
+        if set_output_rate:
+            self.sample_rate = self._mic_sample_rate
+        try:
             self._loopback_stream = self._p.open(
                 format=PA_FORMAT,
                 channels=self._loopback_channels,
@@ -173,13 +243,92 @@ class AudioMixer:
                 input=True,
                 input_device_index=self._loopback_device_index,
             )
+        except OSError as e:
+            raise RuntimeError(
+                "Loopback device does not support its default rate %d Hz: %s"
+                % (self._loopback_sample_rate, e)
+            ) from e
+        try:
+            self._mic_stream = self._p.open(
+                format=PA_FORMAT,
+                channels=self._mic_channels,
+                rate=self._mic_sample_rate,
+                frames_per_buffer=self.frames_per_read,
+                input=True,
+                input_device_index=self._mic_device_index,
+            )
+        except OSError as e:
+            try:
+                self._loopback_stream.stop_stream()
+                self._loopback_stream.close()
+            except Exception:
+                pass
+            self._loopback_stream = None
+            raise RuntimeError(
+                "Microphone does not support its default rate %d Hz: %s"
+                % (self._mic_sample_rate, e)
+            ) from e
+
+    def _reopen_streams(self, reason: str = "read_error") -> bool:
+        """Close and open again. Sessions on the system default resolve it fresh."""
+        if not self._running:
+            return False
+        now = time.time()
+        if now - self._last_reopen_attempt < STREAM_REOPEN_COOLDOWN_SEC:
+            return False
+        self._last_reopen_attempt = now
+        try:
+            self._close_stream(self._mic_stream, "Mic")
+            self._close_stream(self._loopback_stream, "Loopback")
+            self._mic_stream = None
+            self._loopback_stream = None
+            if self._p is not None:
+                try:
+                    self._p.terminate()
+                except Exception:
+                    pass
+            self._p = pyaudio.PyAudio()
+            # Defaults are resolved again on the new PortAudio instance.
+            # A pinned device is found by the name saved at Start; indexes move.
+            mic_info, loop_info = self._lookup_devices(
+                self._p,
+                None,
+                None,
+                mic_name=None if self._follow_mic_default else self._mic_name,
+                loop_name=None if self._follow_loopback_default else self._loopback_name,
+            )
+            self._open_devices(mic_info, loop_info, set_output_rate=False)
+            if not self._running:
+                self._close_stream(self._mic_stream, "Mic")
+                self._close_stream(self._loopback_stream, "Loopback")
+                self._mic_stream = None
+                self._loopback_stream = None
+                try:
+                    self._p.terminate()
+                except Exception:
+                    pass
+                self._p = None
+                return False
             self._loopback_buffer.clear()
             self._loopback_buffer_samples = 0
             self._mic_read_errors = 0
-            log.warning("Capture streams were reopened after repeated mic read failures.")
+            log.warning(
+                "Capture reopened (%s): mic=%s (%s), loopback=%s (%s).",
+                reason, self._mic_device_index, self._mic_name,
+                self._loopback_device_index, self._loopback_name,
+            )
+            diag(
+                "capture_reopened",
+                reason=reason,
+                mic=self._mic_device_index,
+                mic_name=self._mic_name,
+                loopback=self._loopback_device_index,
+                loopback_name=self._loopback_name,
+            )
             return True
         except Exception as e:
             log.exception("Failed to reopen capture streams: %s", e)
+            diag("capture_reopen_failed", reason=reason, error=str(e))
             return False
 
     def set_stereo_callback(self, callback):
@@ -199,16 +348,38 @@ class AudioMixer:
 
     def _run_capture(self):
         """
-        Mic is read blocking (steady stream). Loopback is drained into a buffer;
+        The mic read returns only when frames are already buffered, so a device
+        change cannot block this thread. Loopback is drained into a buffer;
         each block consumes exactly the loopback samples for that block's duration,
         then resamples to mic length. This keeps the loopback timeline continuous
         so transcription of system audio (e.g. other participants) is usable.
         """
+        last_audio = time.monotonic()
         while self._running:
             if self._mic_stream is None or self._loopback_stream is None:
-                break
+                if self._reopen_streams():
+                    last_audio = time.monotonic()
+                else:
+                    time.sleep(0.2)
+                continue
             try:
+                avail = self._mic_stream.get_read_available()
+                if avail < 0:
+                    raise OSError(avail, "mic stream error")
+                if avail < self.frames_per_read:
+                    now = time.monotonic()
+                    if now - last_audio >= MIC_STALL_SEC:
+                        diag(
+                            "capture_stalled",
+                            seconds=round(now - last_audio, 1),
+                            mic=self._mic_device_index,
+                        )
+                        self._reopen_streams("mic_stalled")
+                        last_audio = time.monotonic()
+                    time.sleep(0.01)
+                    continue
                 mic_data = self._mic_stream.read(self.frames_per_read, exception_on_overflow=False)
+                last_audio = time.monotonic()
                 if mic_data is None or len(mic_data) == 0:
                     time.sleep(0.005)
                     continue
@@ -220,12 +391,22 @@ class AudioMixer:
                 if not self._running:
                     break
                 self._mic_read_errors += 1
-                if self._mic_read_errors == 1 or self._mic_read_errors % MIC_ERROR_REOPEN_THRESHOLD == 0:
+                stream_err = isinstance(e, OSError) and e.errno is not None and e.errno < 0
+                if stream_err or self._mic_read_errors == 1 or self._mic_read_errors % MIC_ERROR_REOPEN_THRESHOLD == 0:
                     log.warning("Mic read failed (%d): %s", self._mic_read_errors, e)
-                if self._mic_read_errors >= MIC_ERROR_REOPEN_THRESHOLD:
+                if stream_err or self._mic_read_errors >= MIC_ERROR_REOPEN_THRESHOLD:
                     self._reopen_streams()
                 time.sleep(min(0.05 * self._mic_read_errors, 0.5))
                 continue
+            n_native = len(mic_mono)
+            if (
+                n_native
+                and self._mic_sample_rate
+                and self.sample_rate
+                and self._mic_sample_rate != self.sample_rate
+            ):
+                n_out = max(1, int(round(n_native * float(self.sample_rate) / float(self._mic_sample_rate))))
+                mic_mono = resample(mic_mono, n_out).astype(np.float32)
             n_mic = len(mic_mono)
             mic_rms = _rms32(mic_mono)
 
@@ -233,6 +414,9 @@ class AudioMixer:
             try:
                 while True:
                     available = self._loopback_stream.get_read_available()
+                    if available < 0:
+                        self._reopen_streams("loopback_error")
+                        break
                     if available <= 0:
                         break
                     to_read = min(available, self.frames_per_read * 2)
@@ -244,8 +428,9 @@ class AudioMixer:
             except Exception as e:
                 log.warning("Loopback read failed: %s", e)
 
-            # Consume exactly the loopback samples that match this block's duration (time-aligned)
-            n_loopback_needed = int(round(n_mic * self._loopback_sample_rate / self._mic_sample_rate))
+            # Native mic length keeps the timeline right if the new device uses another rate.
+            mic_rate = self._mic_sample_rate or self.sample_rate or 1
+            n_loopback_needed = int(round(n_native * self._loopback_sample_rate / mic_rate))
             if n_loopback_needed <= 0:
                 n_loopback_needed = n_mic
             loopback_chunk = self._consume_loopback_chunk(n_loopback_needed)
@@ -297,89 +482,28 @@ class AudioMixer:
         """Start capture. Uses default devices unless indices are provided."""
         if self._running:
             return
+        self._follow_mic_default = mic_device_index is None
+        self._follow_loopback_default = loopback_device_index is None
         self._p = pyaudio.PyAudio()
         try:
-            wasapi_info = self._p.get_host_api_info_by_type(pyaudio.paWASAPI)
+            self._p.get_host_api_info_by_type(pyaudio.paWASAPI)
         except OSError as e:
             log.exception("WASAPI not available: %s", e)
             self._p.terminate()
             self._p = None
             raise RuntimeError("WASAPI is not available on this system.") from e
-
-        default_input_index = wasapi_info["defaultInputDevice"]
-        default_output_index = wasapi_info["defaultOutputDevice"]
-        if mic_device_index is not None:
-            default_input_index = mic_device_index
-        mic_info = self._p.get_device_info_by_index(default_input_index)
-        speakers_info = self._p.get_device_info_by_index(default_output_index)
-
-        if loopback_device_index is not None:
-            loopback_info = self._p.get_device_info_by_index(loopback_device_index)
-        elif speakers_info.get("isLoopbackDevice"):
-            loopback_info = speakers_info
-        else:
-            loopback_info = None
-            for dev in self._p.get_loopback_device_info_generator():
-                if speakers_info["name"] in dev["name"]:
-                    loopback_info = dev
-                    break
-        if loopback_info is None:
-            self._p.terminate()
-            self._p = None
-            raise RuntimeError("Default loopback device not found.")
-
-        self._loopback_channels = max(1, int(loopback_info.get("maxInputChannels", 1)))
-        self._mic_channels = max(1, int(mic_info.get("maxInputChannels", 1)))
-        self._mic_device_index = int(default_input_index)
-        self._loopback_device_index = int(loopback_info["index"])
-
-        # Open each device at its native default sample rate (avoids -9997 when dock/mic differ)
-        def _device_rate(info, fallback=48000):
-            r = info.get("defaultSampleRate") or fallback
-            r = int(r) if r else fallback
-            return r if r > 0 else fallback
-
-        self._loopback_sample_rate = _device_rate(loopback_info)
-        self._mic_sample_rate = _device_rate(mic_info)
-        self.sample_rate = self._mic_sample_rate  # output rate = mic rate; loopback resampled in loop
-
         try:
-            self._loopback_stream = self._p.open(
-                format=PA_FORMAT,
-                channels=self._loopback_channels,
-                rate=self._loopback_sample_rate,
-                frames_per_buffer=self.frames_per_read,
-                input=True,
-                input_device_index=self._loopback_device_index,
-            )
-        except OSError as e:
-            self._p.terminate()
-            self._p = None
-            raise RuntimeError(
-                "Loopback device does not support its default rate %d Hz: %s"
-                % (self._loopback_sample_rate, e)
-            ) from e
-        try:
-            self._mic_stream = self._p.open(
-                format=PA_FORMAT,
-                channels=self._mic_channels,
-                rate=self._mic_sample_rate,
-                frames_per_buffer=self.frames_per_read,
-                input=True,
-                input_device_index=self._mic_device_index,
-            )
-        except OSError as e:
+            mic_info, loop_info = self._lookup_devices(self._p, mic_device_index, loopback_device_index)
+            self._open_devices(mic_info, loop_info, set_output_rate=True)
+        except Exception:
             try:
-                self._loopback_stream.stop_stream()
-                self._loopback_stream.close()
+                self._p.terminate()
             except Exception:
                 pass
-            self._p.terminate()
             self._p = None
-            raise RuntimeError(
-                "Microphone does not support its default rate %d Hz: %s"
-                % (self._mic_sample_rate, e)
-            ) from e
+            self._mic_stream = None
+            self._loopback_stream = None
+            raise
 
         if self._mic_sample_rate != self.sample_rate or self._loopback_sample_rate != self.sample_rate:
             log.info(
